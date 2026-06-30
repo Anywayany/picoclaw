@@ -1,0 +1,768 @@
+# PicoClaw Wendi 移动端 H5 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 构建一个可嵌入 Wendi Android WebView 的 PicoClaw 移动端 H5 聊天入口，同时避免暴露桌面管理面和 Pico token。
+
+**Architecture:** 保持 PicoClaw Launcher 作为唯一公开后端入口；新增受认证保护的 `/mobile` SPA 路由，复用现有 Pico WebSocket 聊天控制器。移动端域名通过 Nginx 白名单只放行登录、只读状态、聊天 WebSocket、媒体下载和必要的会话恢复接口。
+
+**Tech Stack:** Go launcher backend, React 19, TypeScript, TanStack Router, Jotai, Vite, Pico WebSocket protocol, Nginx, Android WebView.
+
+---
+
+# PicoClaw Wendi 移动端 H5 最终实施方案
+
+**源码目录:** `picoclaw-main-v0.2.9`
+
+**方案状态:** 已完成源码核对和方案设计，尚未开始代码实现。
+
+---
+
+## 1. 一句话结论
+
+首版采用 `PicoClaw Launcher + 专用 /mobile H5 + Wendi Android WebView`，不引入 Wendi AI 网关，也不把 Pico token 暴露给 WebView。
+
+现方案的关键决策：
+
+1. 未登录访问 `/mobile` 时，后端跳转到 `/launcher-login?redirect=/mobile`，登录成功后回到移动端页面。
+2. 移动端复用现有聊天控制器，并允许 `GET /api/gateway/status`，用于判断网关是否 `running`。
+3. 移动端刷新后恢复上一个会话，允许 `GET /api/sessions/{id}`，但不暴露会话列表和删除能力。
+4. `/mobile` 使用移动端专用 `MobileShell`，只提供 `TooltipProvider`、`Toaster` 和移动端基础布局，不加载桌面 `AppLayout`。
+5. 移动端域名通过 Nginx 精确白名单放行必要路径，不允许宽泛 `/api/`、`/api/pico/`、`/api/gateway/`。
+6. setup 成功后回到 `/launcher-login?redirect=/mobile`，由登录流程写入认证 cookie 后再进入 `/mobile`。
+7. 根路由继续统一初始化聊天 store，移动端页面只订阅网关状态轮询，不自行 teardown 聊天 store。
+8. 静态 manifest 使用项目实际路径 `/site.webmanifest`。
+
+---
+
+## 2. 源码核对结果
+
+以下是本方案依赖的真实源码事实：
+
+| 结论 | 源码依据 |
+| --- | --- |
+| Launcher 认证状态接口是 `GET /api/auth/status`，未登录时仍返回 200，并通过 JSON 中的 `authenticated` 表示是否登录。 | `web/backend/api/auth.go:64`, `web/backend/api/auth.go:167` |
+| 登录后写入的是 HttpOnly cookie，cookie 名为 `picoclaw_launcher_auth`。 | `web/backend/middleware/launcher_dashboard_auth.go:16`, `web/backend/middleware/launcher_dashboard_auth.go:95` |
+| 当前未认证的普通页面会被后端中间件重定向到 `/launcher-login`，不会保留原始页面路径。 | `web/backend/middleware/launcher_dashboard_auth.go:299` |
+| 当前公开静态路径只包含 `/launcher-login`、`/launcher-setup`、`/assets/*` 和若干图标/manifest。 | `web/backend/middleware/launcher_dashboard_auth.go:271` |
+| Pico WebSocket 代理是 `GET /pico/ws`，媒体下载代理是 `GET/HEAD /pico/media/{id}`。 | `web/backend/api/pico.go:18`, `web/backend/api/pico.go:26`, `web/backend/api/pico.go:27` |
+| Pico HTTP 代理会在服务端注入 `Authorization: Bearer <token>`，前端/WebView 不需要也不应该拿 token。 | `web/backend/api/pico.go:65` |
+| 前端聊天控制器连接同源 `/pico/ws?session_id=...`。 | `web/frontend/src/features/chat/controller.ts:109`, `web/frontend/src/features/chat/controller.ts:141` |
+| 前端发送消息的协议是 `message.send`，图片以 data URL 放入 `payload.media`。 | `web/frontend/src/features/chat/controller.ts:323`, `web/frontend/src/features/chat/controller.ts:367` |
+| 聊天控制器只有在 `gatewayAtom.status === "running"` 时才连接 WebSocket。 | `web/frontend/src/features/chat/controller.ts:430`, `web/frontend/src/features/chat/controller.ts:451` |
+| 网关轮询入口是 `subscribeGatewayPolling()`，它调用 `/api/gateway/status`。 | `web/frontend/src/store/gateway.ts:202`, `web/frontend/src/api/gateway.ts:40` |
+| 根路由当前会在非登录/setup 页面调用 `initializeChatStore()`。 | `web/frontend/src/routes/__root.tsx:67` |
+| `AppLayout` 里包含桌面头部、侧边栏、`Toaster`、`TooltipProvider` 和 `TourGuide`。 | `web/frontend/src/components/app-layout.tsx:10`, `web/frontend/src/components/app-layout.tsx:12`, `web/frontend/src/components/app-layout.tsx:24` |
+| 项目 manifest 路径是 `/site.webmanifest`。 | `web/frontend/index.html:9` |
+
+---
+
+## 3. 现方案实施原则
+
+- 保持 Launcher 作为唯一公开后端入口。
+- WebView 只打开专用 `/mobile` 页面。
+- 不把 Pico token、模型凭据、网关控制能力放进 WebView。
+- 移动端首版只做聊天，不做模型、凭据、频道、工具、日志、配置等桌面管理功能。
+- 图片发送使用现有 data URL 媒体路径，不新增任意文件上传端点。
+- 停止生成、重新生成、按 Wendi 用户隔离、审计追踪、SSO 都不放进 MVP。
+- 后端只对 `/mobile` 和 `/mobile/*` 保留 redirect，避免把未知敏感 query 参数带入登录 URL。
+- 移动端消息渲染复用现有 `AssistantMessage`、`UserMessage`、`TypingIndicator`、图片读取工具和聊天 controller，不重写 Pico 协议。
+- 移动端首版不复用桌面 `ChatPage`，避免带入模型选择、历史菜单、上下文详情、桌面 header 和更多 API 暴露面。
+- 移动端文案进入 `web/frontend/src/i18n/locales/en.json` 和 `web/frontend/src/i18n/locales/zh.json`，避免硬编码中文。
+- 如果 Wendi 未来需要“每个 Wendi 用户看到自己的会话、可审计、可撤销”，需要增加 Wendi AI 网关或 SSO 层。
+
+---
+
+## 4. 最终目标
+
+最终要交付的是一个只服务聊天的移动 H5 页面：
+
+1. Wendi Android WebView 打开 `https://picoclaw-mobile.company.com/mobile`。
+2. 如果用户没有 launcher dashboard cookie，后端跳转到 `/launcher-login?redirect=/mobile`。
+3. 用户登录成功后回到 `/mobile`。
+4. `/mobile` 不显示桌面头部、侧边栏、配置入口、日志入口、模型管理、凭据管理、频道管理和网关控制按钮。
+5. 页面只显示：
+   - 顶部轻量标题栏；
+   - 消息列表；
+   - 文本输入框；
+   - 图片附件按钮；
+   - 新会话按钮；
+   - 连接中、未就绪、错误等状态提示。
+6. 聊天复用现有 Pico WebSocket 协议。
+7. WebView 端永远拿不到 Pico token。
+8. 移动端域名通过 Nginx 只放行少量必要路径。
+
+---
+
+## 5. 推荐架构
+
+### 5.1 请求链路
+
+```text
+Wendi Android WebView
+  -> https://picoclaw-mobile.company.com/mobile
+  -> Nginx 移动端域名白名单
+  -> PicoClaw Launcher 后端
+  -> Launcher dashboard cookie 认证
+  -> React /mobile SPA
+  -> /api/gateway/status 查询网关是否 running
+  -> /pico/ws?session_id=... 建立聊天 WebSocket
+  -> Launcher 后端向 Pico gateway 注入服务端 token
+```
+
+### 5.2 认证模型
+
+首版继续使用 Launcher dashboard 级 cookie 认证：
+
+- 优点：改动小，和现有 launcher 后端一致，WebView 不需要知道 token。
+- 缺点：它不是 Wendi 用户级认证，不能区分不同 Wendi 用户。
+- 生产边界：如果只给可信内部 WebView 使用，可以作为 MVP；如果要开放给大量 Wendi 用户，必须追加用户级认证/授权设计。
+
+### 5.3 路由隔离
+
+`/mobile` 不是登录页，也不是公共页。它仍然需要登录，只是登录后不走桌面 `AppLayout`。
+
+推荐在 `web/frontend/src/routes/__root.tsx` 中分三类渲染：
+
+1. `/launcher-login`、`/launcher-setup`：认证流程页面。
+2. `/mobile`、`/mobile/*`：移动端专用 shell。
+3. 其他路径：现有桌面 `AppLayout`。
+
+移动端专用 shell 只带：
+
+- `TooltipProvider`
+- `Toaster`
+- 认证错误提示
+- `<Outlet />`
+- 开发环境下的 Router Devtools
+
+不要带：
+
+- `AppHeader`
+- `AppSidebar`
+- `TourGuide`
+- 网关启动/停止按钮
+- logout、docs、language、theme 等桌面头部操作，除非产品明确要求移动端也支持
+
+### 5.4 聊天状态所有权
+
+不要让移动页面自己 `initializeChatStore()` 再 `teardownChatStore()`。
+
+原因是根路由当前已经在所有非登录/setup 页面执行 `initializeChatStore()`。如果移动页面卸载时调用 `teardownChatStore()`，用户从 `/mobile` 切到桌面 `/` 时，根路由不一定会重新初始化聊天，容易造成桌面聊天断连。
+
+最终决策：
+
+- `__root.tsx` 继续负责 `initializeChatStore()`。
+- `/mobile` 页面负责调用 `subscribeGatewayPolling()`，因为移动端绕过了 `AppHeader`，不会自动启用网关轮询。
+- `/mobile` 页面通过 `chatAtom` 或 `usePicoChat()` 读取聊天状态，通过 `gatewayAtom` 读取网关状态。
+
+### 5.5 会话策略
+
+MVP 采用“无会话列表，但恢复上一个移动端会话”的策略：
+
+- 不显示历史会话菜单。
+- 不允许从移动端删除会话。
+- 保留“新会话”按钮。
+- 允许 `GET /api/sessions/{id}`，让现有 `hydrateActiveSession()` 可以在 WebView 刷新后恢复消息。
+- 不允许 `GET /api/sessions` 列表和 `DELETE /api/sessions/{id}`。
+
+这样既能保持移动端简洁，又不会让用户每次刷新都丢上下文。
+
+---
+
+## 6. 需要修改或新增的文件
+
+### 6.1 后端
+
+| 文件 | 操作 | 目的 |
+| --- | --- | --- |
+| `web/backend/middleware/launcher_dashboard_auth.go` | 修改 | 未认证访问 `/mobile` 时重定向到 `/launcher-login?redirect=/mobile` |
+| `web/backend/middleware/launcher_dashboard_auth_test.go` | 修改 | 增加 redirect 保留、API 不重定向、WebSocket 不重定向、敏感 query 不泛化保留的测试 |
+
+后端只需要改认证中间件，不需要新增 Pico 协议接口。
+
+### 6.2 前端
+
+| 文件 | 操作 | 目的 |
+| --- | --- | --- |
+| `web/frontend/src/features/mobile/redirect.ts` | 新建 | 解析和生成安全的同源 redirect |
+| `web/frontend/src/routes/launcher-login.tsx` | 修改 | 登录成功后跳回 redirect；未初始化时携带 redirect 去 setup |
+| `web/frontend/src/routes/launcher-setup.tsx` | 修改 | setup 成功后跳回 login，并保留 redirect |
+| `web/frontend/src/api/http.ts` | 修改 | API 401 时，如果当前在 `/mobile`，跳转 `/launcher-login?redirect=/mobile` |
+| `web/frontend/src/routes/__root.tsx` | 修改 | `/mobile` 保留认证守卫，但绕开桌面 `AppLayout`，改用移动端 shell |
+| `web/frontend/src/routes/mobile.tsx` | 新建 | TanStack Router 的 `/mobile` 路由 |
+| `web/frontend/src/features/mobile/mobile-shell.tsx` | 新建 | 移动端基础 provider 和错误壳 |
+| `web/frontend/src/features/mobile/use-mobile-gateway-polling.ts` | 新建 | 只订阅网关轮询，不初始化/销毁聊天 store |
+| `web/frontend/src/features/mobile/mobile-chat-page.tsx` | 新建 | 移动端聊天主页面 |
+| `web/frontend/src/features/mobile/mobile-chat-composer.tsx` | 新建 | 移动端输入框、发送按钮、图片附件 |
+| `web/frontend/src/features/mobile/mobile-message-list.tsx` | 新建 | 消息列表、自动滚动、打字状态 |
+| `web/frontend/src/i18n/locales/en.json` | 修改 | 增加移动端英文文案 |
+| `web/frontend/src/i18n/locales/zh.json` | 修改 | 增加移动端中文文案 |
+| `web/frontend/src/routeTree.gen.ts` | 生成更新 | 新增 route 后由 TanStack Router 插件生成，不手工改 |
+
+### 6.3 部署文档
+
+| 文件 | 操作 | 目的 |
+| --- | --- | --- |
+| `docs/wendi-mobile-nginx.example.conf` | 新建 | 记录移动端域名的最小 Nginx 白名单配置 |
+
+---
+
+## 7. 实施细节
+
+### 7.1 后端保留 `/mobile` redirect
+
+未认证访问的目标行为：
+
+```text
+/mobile       -> /launcher-login?redirect=%2Fmobile
+/mobile?x=1   -> /launcher-login?redirect=%2Fmobile%3Fx%3D1
+/mobile/foo   -> /launcher-login?redirect=%2Fmobile%2Ffoo
+/models       -> /launcher-login
+/api/config   -> 401 JSON
+/pico/ws      -> 401 text
+```
+
+注意：只对 `/mobile` 和 `/mobile/*` 保留 redirect，不要对所有页面的 query 都保留，避免把未知敏感参数带进登录地址。
+
+### 7.2 前端安全 redirect
+
+新增 `getSafeRedirectTarget()`：
+
+- 空值返回 fallback。
+- 必须以 `/` 开头。
+- 禁止 `//evil.com` 这类协议相对 URL。
+- 禁止绝对 URL。
+- 禁止控制字符。
+- 默认 fallback 是 `/`。
+
+登录页行为：
+
+```text
+/launcher-login?redirect=/mobile
+  -> 密码正确
+  -> /mobile
+```
+
+未初始化行为：
+
+```text
+/launcher-login?redirect=/mobile
+  -> status.initialized === false
+  -> /launcher-setup?redirect=/mobile
+```
+
+setup 成功行为：
+
+```text
+/launcher-setup?redirect=/mobile
+  -> 设置密码成功
+  -> /launcher-login?redirect=/mobile
+```
+
+不要让 setup 成功后直接去 `/mobile`，因为 setup 接口当前不会写登录 cookie。
+
+### 7.3 `/mobile` 根布局
+
+`__root.tsx` 要新增 `isMobilePage` 判断，但不要把 `/mobile` 加入 `isAuthPage`。
+
+推荐逻辑：
+
+```text
+if isAuthPage:
+  render auth pages only
+else if isMobilePage:
+  render MobileShell + Outlet
+else:
+  render AppLayout + Outlet
+```
+
+同时，认证守卫中跳转 login/setup 时，如果当前是 `/mobile`，要保留 redirect。
+
+### 7.4 移动端聊天 UI
+
+移动端页面建议保持安静、紧凑、功能明确：
+
+- 顶部栏高度 48px 左右，只显示 “PicoClaw” 和新会话按钮。
+- 消息区占满剩余高度，使用 `min-h-dvh` 和 `env(safe-area-inset-bottom)` 适配 Android WebView 和软键盘。
+- 用户消息靠右，助手消息靠左。
+- 复用 `AssistantMessage`、`UserMessage`、`TypingIndicator`，但外层宽度在移动端限制到 `max-w-[88%]` 或类似范围。
+- 输入区固定底部，支持：
+  - 文本输入；
+  - Enter 换行或发送按移动端习惯处理；
+  - 图片选择；
+  - 发送按钮；
+  - 发送中/未连接/网关未运行提示。
+- 不显示模型选择器、历史菜单、上下文 ring、工具详情筛选、桌面空状态。
+
+### 7.5 图片发送
+
+继续使用现有图片工具：
+
+- `buildChatImageAttachments()`
+- `CHAT_IMAGE_ACCEPT`
+- `sendChatMessage({ content, attachments })`
+
+不要新增上传接口。
+
+图片会以 data URL 进入 `payload.media`，由现有 Pico 协议处理。
+
+### 7.6 网关状态
+
+移动端不提供启动/停止/重启按钮。
+
+如果 `gateway.status` 不是 `running`：
+
+- 输入框禁用。
+- 页面提示：“PicoClaw 尚未就绪，请先在桌面端启动网关。”
+- 不调用 start/stop/restart API。
+
+因为聊天控制器依赖 `gatewayAtom.status === "running"`，移动端必须订阅 `subscribeGatewayPolling()`，移动端域名也必须允许 `GET /api/gateway/status`。
+
+---
+
+## 8. 移动端 Nginx 白名单示例
+
+下面是最终推荐的移动端域名配置。实际 TLS 证书、日志、限流、安全头可按部署规范补充。
+
+```nginx
+upstream picoclaw_launcher {
+    server 127.0.0.1:18800;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    "" close;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name picoclaw-mobile.company.com;
+
+    location = / {
+        return 404;
+    }
+
+    location = /mobile {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location ^~ /mobile/ {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location ^~ /assets/ {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /favicon.ico {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+    }
+
+    location = /favicon.svg {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+    }
+
+    location = /favicon-96x96.png {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+    }
+
+    location = /apple-touch-icon.png {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+    }
+
+    location = /site.webmanifest {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+    }
+
+    location = /launcher-login {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /launcher-setup {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/auth/status {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/auth/login {
+        limit_except POST { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/auth/setup {
+        limit_except POST { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/gateway/status {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/pico/info {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ ^/api/sessions/[^/]+$ {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /pico/ws {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+    }
+
+    location ^~ /pico/media/ {
+        limit_except GET { deny all; }
+        proxy_pass http://picoclaw_launcher;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        return 404;
+    }
+}
+```
+
+必须继续确认这些路径在移动端域名返回 404 或 403：
+
+```text
+/models
+/credentials
+/channels
+/agent
+/agent/hub
+/agent/skills
+/agent/tools
+/config
+/logs
+/api/models
+/api/credentials
+/api/channels
+/api/gateway/start
+/api/gateway/stop
+/api/gateway/restart
+/api/gateway/logs
+/api/pico/token
+/api/pico/setup
+/api/sessions
+```
+
+---
+
+## 9. Android WebView 集成建议
+
+Wendi Android 首版只需要加载移动端 URL：
+
+```kotlin
+webView.loadUrl("https://picoclaw-mobile.company.com/mobile")
+```
+
+推荐设置：
+
+```kotlin
+webView.settings.javaScriptEnabled = true
+webView.settings.domStorageEnabled = true
+webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+
+CookieManager.getInstance().setAcceptCookie(true)
+CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
+```
+
+推荐限制导航：
+
+```kotlin
+override fun shouldOverrideUrlLoading(
+    view: WebView,
+    request: WebResourceRequest,
+): Boolean {
+    val host = request.url.host ?: return true
+    return host != "picoclaw-mobile.company.com"
+}
+```
+
+首版不要使用 `addJavascriptInterface`。H5 页面已经可以靠同源 cookie、HTTP API 和 WebSocket 完成聊天。
+
+---
+
+## 10. 开发计划和进度
+
+### 10.1 当前进度
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 源码核对 | 已完成 | 已核对认证、Pico 代理、聊天 controller、网关 store、布局和静态资源路径 |
+| 最终方案文档 | 已完成 | 本文档 |
+| 代码实现 | 未开始 | 需要按下面任务实施 |
+| 部署配置 | 未开始 | 需要新增 Nginx 示例并在真实环境验证 |
+| Android 集成 | 未开始 | 在 Wendi Android 项目内完成，不属于当前 PicoClaw 仓库 |
+| 联调验收 | 未开始 | 需要真实 HTTPS 域名和 Android WebView |
+
+### 10.2 推荐排期
+
+整体预计 5 到 7 个工作日，具体取决于 Android 项目联调速度。
+
+| 任务 | 预计耗时 | 负责人 | 状态 | 验收标准 |
+| --- | --- | --- | --- | --- |
+| T1 后端 `/mobile` redirect 保留 | 0.5 天 | PicoClaw 后端 | 未开始 | 未登录访问 `/mobile` 跳到 `/launcher-login?redirect=/mobile`，API/WS 行为不变 |
+| T2 前端登录/setup redirect | 0.5 天 | PicoClaw 前端 | 未开始 | 登录后回 `/mobile`；首次 setup 后进入 login 并保留 redirect |
+| T3 `/mobile` 路由隔离和 shell | 0.75 天 | PicoClaw 前端 | 未开始 | `/mobile` 不出现桌面 header/sidebar，但 toast 可显示 |
+| T4 移动端聊天页面 | 1.5 天 | PicoClaw 前端 | 未开始 | 可发送文本和图片，可显示助手回复、附件、打字状态 |
+| T5 会话恢复和状态处理 | 0.75 天 | PicoClaw 前端 | 未开始 | WebView 刷新后恢复上次移动端会话；网关未运行时输入禁用 |
+| T6 Nginx 示例和部署白名单 | 0.5 天 | 部署/后端 | 未开始 | 移动域名只暴露白名单路径，管理路径不可访问 |
+| T7 Wendi Android WebView 集成 | 1 天 | Wendi Android | 未开始 | WebView 可登录、聊天、刷新保持 cookie |
+| T8 联调测试和修复 | 1 到 2 天 | 全栈/Android | 未开始 | 真实 HTTPS + Android WebView 全链路通过 |
+
+### 10.3 详细任务清单
+
+#### T1 后端 `/mobile` redirect 保留
+
+- [ ] 在 `launcher_dashboard_auth.go` 中新增 helper，判断 `canonicalPath` 是否为 `/mobile` 或 `/mobile/*`。
+- [ ] 对移动端路径构造 `/launcher-login?redirect=<escaped requestURI>`。
+- [ ] 保持 `/api/*` 返回 401 JSON。
+- [ ] 保持 `/pico/ws` 返回 401，不做 302。
+- [ ] 保持非移动端普通页面继续跳 `/launcher-login`。
+- [ ] 增加单元测试：
+  - [ ] `GET /mobile` 未登录 -> 302 `/launcher-login?redirect=%2Fmobile`
+  - [ ] `GET /mobile?foo=bar` 未登录 -> 302，redirect 包含 query
+  - [ ] `GET /models` 未登录 -> 302 `/launcher-login`
+  - [ ] `GET /?token=secret` 未登录 -> 不把 token 放入 redirect
+  - [ ] `GET /api/config` 未登录 -> 401
+  - [ ] `GET /pico/ws` 未登录 -> 401
+
+#### T2 前端登录/setup redirect
+
+- [ ] 新建 `src/features/mobile/redirect.ts`。
+- [ ] 在 `launcher-login.tsx` 中读取安全 redirect。
+- [ ] 登录成功后跳转 redirectTarget。
+- [ ] 登录页发现未初始化时跳 `/launcher-setup?redirect=...`。
+- [ ] 登录接口返回 409 时跳 `/launcher-setup?redirect=...`。
+- [ ] 在 `launcher-setup.tsx` 中读取同一个 redirect。
+- [ ] setup 成功后跳 `/launcher-login?redirect=...`，不要直接跳 `/mobile`。
+- [ ] 在 `api/http.ts` 中，移动端页面 API 401 时跳 `/launcher-login?redirect=<当前 mobile 路径>`。
+
+#### T3 `/mobile` 路由隔离和 shell
+
+- [ ] 新建 `src/routes/mobile.tsx`。
+- [ ] 在 `__root.tsx` 中识别 `/mobile` 和 `/mobile/*`。
+- [ ] 保留认证守卫，不把 `/mobile` 当公共 auth page。
+- [ ] 新建 `MobileShell`，提供 `TooltipProvider`、`Toaster`、认证错误条和 `<Outlet />`。
+- [ ] 确认 `/mobile` 不渲染 `AppHeader`、`AppSidebar`、`TourGuide`。
+- [ ] 运行 `pnpm build` 让 `routeTree.gen.ts` 更新。
+
+#### T4 移动端聊天页面
+
+- [ ] 新建 `use-mobile-gateway-polling.ts`，只调用 `subscribeGatewayPolling()`。
+- [ ] 新建 `mobile-chat-page.tsx`。
+- [ ] 新建 `mobile-message-list.tsx`。
+- [ ] 新建 `mobile-chat-composer.tsx`。
+- [ ] 复用 `usePicoChat()` 读取 messages、connectionState、isTyping、newChat、sendMessage。
+- [ ] 复用 `AssistantMessage`、`UserMessage`、`TypingIndicator`。
+- [ ] 复用 `buildChatImageAttachments()` 和 `CHAT_IMAGE_ACCEPT`。
+- [ ] 禁止暴露模型选择、历史列表、网关控制、配置入口。
+- [ ] 增加 i18n 文案。
+
+#### T5 会话恢复和状态处理
+
+- [ ] 保留现有 `hydrateActiveSession()` 行为。
+- [ ] Nginx 允许 `GET /api/sessions/{id}`，但不允许列表和删除。
+- [ ] 网关非 running 时输入禁用。
+- [ ] WebSocket disconnected/error 时给出简短状态提示。
+- [ ] 刷新 WebView 后确认上次移动端会话恢复。
+
+#### T6 部署白名单
+
+- [ ] 新建 `docs/wendi-mobile-nginx.example.conf`。
+- [ ] 使用本方案第 8 节白名单。
+- [ ] 不允许宽泛 `/api/`。
+- [ ] 不允许宽泛 `/api/pico/`。
+- [ ] 不允许 `/api/gateway/start|stop|restart|logs`。
+- [ ] 不允许 `/api/sessions` 列表和 DELETE。
+
+#### T7 Android WebView
+
+- [ ] Wendi Android 只加载移动端域名 `/mobile`。
+- [ ] 启用 JavaScript 和 DOM Storage。
+- [ ] 禁止 mixed content。
+- [ ] 限制外部导航。
+- [ ] 启用 first-party cookie。
+- [ ] 不添加 JSBridge。
+
+#### T8 联调验收
+
+- [ ] 使用真实 HTTPS 域名测试登录。
+- [ ] 使用真实 Android WebView 测试 cookie 保留。
+- [ ] 验证 WebSocket 101。
+- [ ] 验证文本发送和助手回复。
+- [ ] 验证图片发送。
+- [ ] 验证刷新恢复会话。
+- [ ] 验证管理路径无法访问。
+- [ ] 验证网关停止时移动端只提示，不出现启动按钮。
+
+---
+
+## 11. 验证计划
+
+### 11.1 自动化验证
+
+后端：
+
+```powershell
+go test ./web/backend/middleware ./web/backend/api
+```
+
+全量 Go 测试：
+
+```powershell
+go test ./...
+```
+
+前端：
+
+```powershell
+cd web/frontend
+pnpm build
+pnpm lint
+```
+
+### 11.2 手动验证
+
+认证：
+
+- [ ] 未登录访问 `/mobile`，进入 `/launcher-login?redirect=/mobile`。
+- [ ] 登录成功后回到 `/mobile`。
+- [ ] 首次未 setup 时，`/mobile -> login -> setup -> login -> mobile` 链路完整。
+- [ ] 登录 cookie 是 HttpOnly，WebView JS 读不到。
+
+页面隔离：
+
+- [ ] `/mobile` 没有桌面头部。
+- [ ] `/mobile` 没有桌面侧边栏。
+- [ ] `/mobile` 没有模型、凭据、频道、agent、配置、日志入口。
+- [ ] toast/错误提示能显示。
+
+聊天：
+
+- [ ] 网关 running 时自动连接 `/pico/ws`。
+- [ ] DevTools/抓包显示 WebSocket 状态为 101。
+- [ ] 发送文本后本地用户消息立即出现。
+- [ ] 助手回复正常追加。
+- [ ] `typing.start` 和 `typing.stop` 能更新打字状态。
+- [ ] 图片附件以 data URL 发送。
+- [ ] 助手返回 `media.create` 或附件时能显示/下载。
+
+部署白名单：
+
+- [ ] `/api/gateway/status` 可访问。
+- [ ] `/api/gateway/start` 不可访问。
+- [ ] `/api/pico/info` 可访问。
+- [ ] `/api/pico/token` 不可访问。
+- [ ] `/api/sessions/<id>` GET 可访问。
+- [ ] `/api/sessions` 列表不可访问。
+- [ ] `/models`、`/credentials`、`/channels`、`/agent`、`/config`、`/logs` 不可访问。
+
+Android：
+
+- [ ] WebView 首次打开可登录。
+- [ ] App 后台再回来不丢 cookie。
+- [ ] 刷新 WebView 不丢会话。
+- [ ] 软键盘弹起时输入区不被遮挡。
+- [ ] 返回键行为符合 Wendi App 预期。
+
+---
+
+## 12. 主要风险和处理方式
+
+| 风险 | 影响 | 处理 |
+| --- | --- | --- |
+| Launcher 认证是 dashboard 级，不是 Wendi 用户级 | 多用户场景无法隔离 | MVP 可接受；生产多用户必须加 Wendi 网关或 SSO |
+| 移动域名白名单漏掉 `/api/gateway/status` | WebSocket 永远不连接 | 必须放行只读 status |
+| 白名单过宽 | 暴露管理能力 | 不允许宽泛 `/api/`、`/api/pico/`、`/api/gateway/` |
+| setup 成功直接跳 `/mobile` | 仍未登录，循环回 login | setup 成功必须回 login，并保留 redirect |
+| 移动端自行 teardown chat store | 从移动端切回桌面后聊天状态异常 | 根路由统一初始化；移动端不 teardown |
+| Android WebView cookie 行为和桌面浏览器不同 | 登录状态不稳定 | 必须真实 WebView 联调，不只用 Chrome |
+| 网关未运行 | 移动端无法聊天 | 首版只提示，不提供移动端启动/停止能力 |
+
+---
+
+## 13. 最终实施顺序
+
+推荐按这个顺序开发，避免前后互相卡住：
+
+1. 后端 `/mobile` redirect 保留和测试。
+2. 前端 login/setup redirect。
+3. `/mobile` 路由和移动 shell。
+4. 网关轮询和最小聊天页面。
+5. 图片附件和消息渲染完善。
+6. 会话恢复策略。
+7. Nginx 白名单文档。
+8. Android WebView 集成。
+9. 真实 HTTPS + Android 联调。
+
+---
+
+## 14. 最终判定
+
+这个 MVP 架构可以落地。
+
+它的关键不是新增一套聊天后端，而是把现有 launcher 能力“收窄后”给移动端使用：
+
+- 用现有 cookie 认证；
+- 用现有 `/pico/ws`；
+- 用现有聊天 controller；
+- 用现有媒体 data URL 流程；
+- 用 Nginx 把桌面管理面挡在移动域名外。
+
+首版最应该优先保证的是认证回跳、路由隔离和白名单准确性。只要这三件事做好，移动 H5 聊天本身可以比较平滑地复用现有代码。

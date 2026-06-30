@@ -1,0 +1,62 @@
+{
+  "viewport": {
+    "width": 412,
+    "height": 915
+  },
+  "message": "手机端UI发送测试 2026-06-30T02:57:25.805Z，请简短回复 OK。",
+  "status": "sent-and-response-visible",
+  "screenshots": {
+    "before": "/tmp/picoclaw-mobile-send-check/before-send.png",
+    "typed": "/tmp/picoclaw-mobile-send-check/typed-before-click.png",
+    "after": "/tmp/picoclaw-mobile-send-check/after-send.png"
+  },
+  "before": {
+    "url": "http://127.0.0.1:5173/mobile",
+    "text": "PicoClaw\nConnected\nPicoClaw\nStart a conversation from Wendi.\n-\nTanStack Router",
+    "docScrollWidth": 412,
+    "bodyScrollWidth": 412,
+    "docClientWidth": 412
+  },
+  "after": {
+    "url": "http://127.0.0.1:5173/mobile",
+    "text": "PicoClaw\nConnected\n手机端UI发送测试 2026-06-30T02:57:25.805Z，请简短回复 OK。\n2:58 AM\nReasoning\nmy-deepseek\n2:58 AM\n\nThe user is sending a mobile UI test message. They just want a short \"OK\" reply.\n\nPicoClaw\n•\n2:58 AM\n\nOK\n\n-\nTanStack Router",
+    "docScrollWidth": 412,
+    "bodyScrollWidth": 412,
+    "docClientWidth": 412
+  },
+  "consoleMessages": [
+    "error: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "pageErrors": [],
+  "controlsBefore": {
+    "textareaVisible": true,
+    "textareaEnabled": true,
+    "sendVisible": true,
+    "sendEnabledBeforeType": false,
+    "attachVisible": false,
+    "attachEnabled": false
+  },
+  "typedValue": "手机端UI发送测试 2026-06-30T02:57:25.805Z，请简短回复 OK。",
+  "sendEnabledAfterType": true,
+  "sawUserMessage": true,
+  "sawAssistantResponse": true,
+  "textareaValueAfterSend": "",
+  "sendEnabledAfterSend": false,
+  "visibleTextAfter": [
+    "PicoClaw",
+    "Connected",
+    "手机端UI发送测试 2026-06-30T02:57:25.805Z，请简短回复 OK。",
+    "2:58 AM",
+    "Reasoning",
+    "my-deepseek",
+    "2:58 AM",
+    "The user is sending a mobile UI test message. They just want a short \"OK\" reply.",
+    "PicoClaw",
+    "•",
+    "2:58 AM",
+    "OK",
+    "-",
+    "TanStack Router"
+  ],
+  "horizontalOverflow": false
+}

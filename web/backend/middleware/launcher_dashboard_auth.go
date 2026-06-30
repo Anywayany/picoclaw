@@ -307,5 +307,16 @@ func rejectLauncherDashboardAuth(w http.ResponseWriter, r *http.Request, canonic
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	http.Redirect(w, r, "/launcher-login", http.StatusFound)
+	http.Redirect(w, r, launcherDashboardLoginRedirectPath(r, canonicalPath), http.StatusFound)
+}
+
+func launcherDashboardLoginRedirectPath(r *http.Request, canonicalPath string) string {
+	if !isMobileDashboardPath(canonicalPath) {
+		return "/launcher-login"
+	}
+	return "/launcher-login?redirect=" + url.QueryEscape(r.URL.RequestURI())
+}
+
+func isMobileDashboardPath(canonicalPath string) bool {
+	return canonicalPath == "/mobile" || strings.HasPrefix(canonicalPath, "/mobile/")
 }

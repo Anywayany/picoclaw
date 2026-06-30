@@ -20,11 +20,26 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  buildLauncherAuthPath,
+  getRedirectTargetFromLocation,
+  isMobilePathname,
+} from "@/features/mobile/redirect"
 import { useTheme } from "@/hooks/use-theme"
+import { cn } from "@/lib/utils"
 
 function LauncherSetupPage() {
   const { t, i18n } = useTranslation()
   const { theme, toggleTheme } = useTheme()
+  const redirectTarget = React.useMemo(() => getRedirectTargetFromLocation(), [])
+  const isMobileRedirect = React.useMemo(
+    () => isMobilePathname(redirectTarget),
+    [redirectTarget],
+  )
+  const loginPath = React.useMemo(
+    () => buildLauncherAuthPath("/launcher-login", redirectTarget),
+    [redirectTarget],
+  )
   const [password, setPassword] = React.useState("")
   const [confirm, setConfirm] = React.useState("")
   const [submitting, setSubmitting] = React.useState(false)
@@ -41,7 +56,7 @@ function LauncherSetupPage() {
     try {
       const result = await postLauncherDashboardSetup(password, confirm)
       if (result.ok) {
-        globalThis.location.assign("/launcher-login")
+        globalThis.location.assign(loginPath)
         return
       }
       setError(result.error)
@@ -54,7 +69,15 @@ function LauncherSetupPage() {
 
   return (
     <div className="bg-background text-foreground flex min-h-dvh flex-col">
-      <header className="border-border/50 flex h-14 shrink-0 items-center justify-end gap-2 border-b px-4">
+      <header
+        className={cn(
+          "border-border/50 flex shrink-0 items-center gap-2 border-b px-4",
+          isMobileRedirect ? "h-12 justify-between" : "h-14 justify-end",
+        )}
+      >
+        {isMobileRedirect ? (
+          <div className="min-w-0 text-sm font-semibold">PicoClaw</div>
+        ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="icon" aria-label="Language">
@@ -85,8 +108,20 @@ function LauncherSetupPage() {
         </Button>
       </header>
 
-      <div className="flex flex-1 items-center justify-center p-4">
-        <Card className="w-full max-w-md" size="sm">
+      <div
+        className={cn(
+          "flex flex-1 justify-center p-4",
+          isMobileRedirect ? "items-start pt-16" : "items-center",
+        )}
+      >
+        <Card
+          className={cn(
+            "w-full max-w-md",
+            isMobileRedirect &&
+              "bg-background gap-6 rounded-none py-0 shadow-none ring-0",
+          )}
+          size="sm"
+        >
           <CardHeader>
             <CardTitle>{t("launcherSetup.title")}</CardTitle>
             <CardDescription>{t("launcherSetup.description")}</CardDescription>

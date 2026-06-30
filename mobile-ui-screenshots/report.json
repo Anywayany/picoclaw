@@ -1,0 +1,203 @@
+[
+  {
+    "name": "iphone-se",
+    "viewport": {
+      "width": 375,
+      "height": 667
+    },
+    "httpStatus": 200,
+    "url": "http://127.0.0.1:5173/mobile",
+    "screenshot": "/tmp/picoclaw-mobile-ui-check/iphone-se.png",
+    "visibleText": [
+      "PicoClaw",
+      "Gateway not running",
+      "PicoClaw is not ready. Start the gateway from the desktop dashboard.",
+      "PicoClaw",
+      "Start a conversation from Wendi.",
+      "-",
+      "TanStack Router"
+    ],
+    "horizontalOverflow": false,
+    "widths": {
+      "docScrollWidth": 375,
+      "bodyScrollWidth": 375,
+      "docClientWidth": 375
+    },
+    "controls": {
+      "textareaVisible": true,
+      "textareaEnabled": false,
+      "typedValue": null,
+      "sendVisible": true,
+      "sendEnabledBefore": false,
+      "sendEnabledAfterType": null,
+      "attachVisible": false,
+      "attachEnabled": false,
+      "newChatVisible": true
+    },
+    "boxes": {
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 375,
+        "height": 48
+      },
+      "textarea": {
+        "x": 65,
+        "y": 610,
+        "width": 245,
+        "height": 36
+      },
+      "sendButton": {
+        "x": 318,
+        "y": 610,
+        "width": 36,
+        "height": 36
+      },
+      "attachButton": null,
+      "newChatButton": {
+        "x": 327,
+        "y": 6,
+        "width": 36,
+        "height": 36
+      }
+    },
+    "consoleMessages": [
+      "error: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "pageErrors": []
+  },
+  {
+    "name": "iphone-13",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "httpStatus": 200,
+    "url": "http://127.0.0.1:5173/mobile",
+    "screenshot": "/tmp/picoclaw-mobile-ui-check/iphone-13.png",
+    "visibleText": [
+      "PicoClaw",
+      "Gateway not running",
+      "PicoClaw is not ready. Start the gateway from the desktop dashboard.",
+      "PicoClaw",
+      "Start a conversation from Wendi.",
+      "-",
+      "TanStack Router"
+    ],
+    "horizontalOverflow": false,
+    "widths": {
+      "docScrollWidth": 390,
+      "bodyScrollWidth": 390,
+      "docClientWidth": 390
+    },
+    "controls": {
+      "textareaVisible": true,
+      "textareaEnabled": false,
+      "typedValue": null,
+      "sendVisible": true,
+      "sendEnabledBefore": false,
+      "sendEnabledAfterType": null,
+      "attachVisible": false,
+      "attachEnabled": false,
+      "newChatVisible": true
+    },
+    "boxes": {
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 48
+      },
+      "textarea": {
+        "x": 65,
+        "y": 787,
+        "width": 260,
+        "height": 36
+      },
+      "sendButton": {
+        "x": 333,
+        "y": 787,
+        "width": 36,
+        "height": 36
+      },
+      "attachButton": null,
+      "newChatButton": {
+        "x": 342,
+        "y": 6,
+        "width": 36,
+        "height": 36
+      }
+    },
+    "consoleMessages": [
+      "error: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "pageErrors": []
+  },
+  {
+    "name": "pixel-7",
+    "viewport": {
+      "width": 412,
+      "height": 915
+    },
+    "httpStatus": 200,
+    "url": "http://127.0.0.1:5173/mobile",
+    "screenshot": "/tmp/picoclaw-mobile-ui-check/pixel-7.png",
+    "visibleText": [
+      "PicoClaw",
+      "Gateway not running",
+      "PicoClaw is not ready. Start the gateway from the desktop dashboard.",
+      "PicoClaw",
+      "Start a conversation from Wendi.",
+      "-",
+      "TanStack Router"
+    ],
+    "horizontalOverflow": false,
+    "widths": {
+      "docScrollWidth": 412,
+      "bodyScrollWidth": 412,
+      "docClientWidth": 412
+    },
+    "controls": {
+      "textareaVisible": true,
+      "textareaEnabled": false,
+      "typedValue": null,
+      "sendVisible": true,
+      "sendEnabledBefore": false,
+      "sendEnabledAfterType": null,
+      "attachVisible": false,
+      "attachEnabled": false,
+      "newChatVisible": true
+    },
+    "boxes": {
+      "header": {
+        "x": 0,
+        "y": 0,
+        "width": 412,
+        "height": 48
+      },
+      "textarea": {
+        "x": 65,
+        "y": 858,
+        "width": 282,
+        "height": 36
+      },
+      "sendButton": {
+        "x": 355,
+        "y": 858,
+        "width": 36,
+        "height": 36
+      },
+      "attachButton": null,
+      "newChatButton": {
+        "x": 364,
+        "y": 6,
+        "width": 36,
+        "height": 36
+      }
+    },
+    "consoleMessages": [
+      "error: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "pageErrors": []
+  }
+]

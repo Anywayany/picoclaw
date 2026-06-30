@@ -1,4 +1,9 @@
 import { isLauncherAuthPathname } from "@/lib/launcher-login-path"
+import {
+  buildLauncherAuthPath,
+  getCurrentMobileRedirectTarget,
+  isMobilePathname,
+} from "@/features/mobile/redirect"
 
 function isLauncherAuthPath(): boolean {
   if (typeof globalThis.location === "undefined") {
@@ -35,7 +40,15 @@ export async function launcherFetch(
       typeof globalThis.location !== "undefined" &&
       !isLauncherAuthPath()
     ) {
-      globalThis.location.assign("/launcher-login")
+      const pathname = globalThis.location.pathname || "/"
+      globalThis.location.assign(
+        isMobilePathname(pathname)
+          ? buildLauncherAuthPath(
+              "/launcher-login",
+              getCurrentMobileRedirectTarget(),
+            )
+          : "/launcher-login",
+      )
     }
   }
   return res

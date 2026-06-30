@@ -79,6 +79,68 @@ func TestLauncherDashboardAuth_QueryTokenDoesNotAuthenticate(t *testing.T) {
 	}
 }
 
+func TestLauncherDashboardAuth_MobileRedirectPreservesTarget(t *testing.T) {
+	cfg := LauncherDashboardAuthConfig{ExpectedCookie: "deadbeef"}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not run without session cookie")
+	})
+	h := LauncherDashboardAuth(cfg, next)
+
+	for _, tc := range []struct {
+		name     string
+		path     string
+		location string
+	}{
+		{
+			name:     "mobile root",
+			path:     "/mobile",
+			location: "/launcher-login?redirect=%2Fmobile",
+		},
+		{
+			name:     "mobile query",
+			path:     "/mobile?foo=bar",
+			location: "/launcher-login?redirect=%2Fmobile%3Ffoo%3Dbar",
+		},
+		{
+			name:     "mobile child",
+			path:     "/mobile/foo",
+			location: "/launcher-login?redirect=%2Fmobile%2Ffoo",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+			}
+			if got := rec.Header().Get("Location"); got != tc.location {
+				t.Fatalf("Location = %q, want %q", got, tc.location)
+			}
+		})
+	}
+}
+
+func TestLauncherDashboardAuth_NonMobileRedirectDoesNotPreserveQuery(t *testing.T) {
+	cfg := LauncherDashboardAuthConfig{ExpectedCookie: "deadbeef"}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not run without session cookie")
+	})
+	h := LauncherDashboardAuth(cfg, next)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/models?token=secret", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if got := rec.Header().Get("Location"); got != "/launcher-login" {
+		t.Fatalf("Location = %q, want %q", got, "/launcher-login")
+	}
+}
+
 func TestLauncherDashboardAuth_LocalAutoLogin(t *testing.T) {
 	const cookieVal = "session-cookie-value"
 	autoLogin := mustLocalAutoLogin(t, time.Minute)

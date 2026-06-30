@@ -120,6 +120,38 @@
       "local": "Local"
     }
   },
+  "mobile": {
+    "placeholder": "Message PicoClaw...",
+    "emptyTitle": "PicoClaw",
+    "emptyDescription": "Start a conversation from Wendi.",
+    "gatewayHint": "PicoClaw is not ready. Start the gateway from the desktop dashboard.",
+    "gateway": {
+      "running": "Gateway running",
+      "starting": "Gateway starting...",
+      "restarting": "Gateway restarting...",
+      "stopping": "Gateway stopping...",
+      "stopped": "Gateway not running",
+      "error": "Gateway error",
+      "unknown": "Checking gateway..."
+    },
+    "connection": {
+      "connected": "Connected",
+      "connecting": "Connecting...",
+      "disconnected": "Disconnected",
+      "error": "Connection error"
+    },
+    "disabled": {
+      "gatewayUnknown": "Checking gateway...",
+      "gatewayStarting": "Gateway is starting...",
+      "gatewayRestarting": "Gateway is restarting...",
+      "gatewayStopping": "Gateway is stopping...",
+      "gatewayStopped": "Gateway is not running",
+      "gatewayError": "Gateway is unavailable",
+      "websocketConnecting": "Connecting...",
+      "websocketDisconnected": "Chat is disconnected",
+      "websocketError": "Chat connection failed"
+    }
+  },
   "header": {
     "logout": {
       "tooltip": "Sign out",

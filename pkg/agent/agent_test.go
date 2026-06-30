@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4427,6 +4428,72 @@ func (p *visionUnsupportedMediaProvider) GetDefaultModel() string {
 	return "mock-fail-model"
 }
 
+type inlineAttachmentSaveProvider struct {
+	targetPath string
+	pathPrefix string
+	calls      int
+	mediaSeen  []bool
+	pathSeen   []bool
+	seenPath   string
+}
+
+func (p *inlineAttachmentSaveProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+
+	hasMedia := false
+	hasPath := false
+	for _, msg := range messages {
+		if p.targetPath != "" && strings.Contains(msg.Content, p.targetPath) {
+			hasPath = true
+		}
+		if p.pathPrefix != "" {
+			start := strings.Index(msg.Content, p.pathPrefix)
+			if start >= 0 {
+				rest := msg.Content[start:]
+				end := strings.IndexAny(rest, "\n ]")
+				if end < 0 {
+					end = len(rest)
+				}
+				p.seenPath = rest[:end]
+				hasPath = true
+			}
+		}
+		if strings.Contains(msg.Content, "[image:") || strings.Contains(msg.Content, "[file:") {
+			return nil, fmt.Errorf("text provider unexpectedly received media path tag in save task: %q", msg.Content)
+		}
+		for _, ref := range msg.Media {
+			if strings.TrimSpace(ref) != "" {
+				hasMedia = true
+				break
+			}
+		}
+	}
+	p.mediaSeen = append(p.mediaSeen, hasMedia)
+	p.pathSeen = append(p.pathSeen, hasPath)
+
+	if hasMedia {
+		return nil, fmt.Errorf("text provider unexpectedly received image media")
+	}
+	if !hasPath {
+		return nil, fmt.Errorf("text provider did not receive saved image path tag")
+	}
+
+	return &providers.LLMResponse{
+		Content:   "saved",
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
+func (p *inlineAttachmentSaveProvider) GetDefaultModel() string {
+	return "inline-attachment-save-model"
+}
+
 type loadImagePlanningProvider struct {
 	path        string
 	followUpErr error
@@ -4731,6 +4798,206 @@ func TestAgentLoop_VisionUnsupportedErrorReturnsClearFailure(t *testing.T) {
 	}
 	if len(history[0].Media) == 0 {
 		t.Fatalf("history[0].Media = %v, want original media preserved", history[0].Media)
+	}
+}
+
+func TestAgentLoop_InlineImageAttachmentSaveTargetBypassesVisionInput(t *testing.T) {
+	workspace := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "mobile-attachment.png")
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &inlineAttachmentSaveProvider{targetPath: targetPath}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
+
+	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "mobile",
+			ChatID:    "chat1",
+			ChatType:  "direct",
+			SenderID:  "user1",
+			MessageID: "m1",
+		},
+		Content: "图片附件发送测试：不需要识别或分析图片内容。请把收到的图片附件保存到 " +
+			targetPath,
+		Media:      []string{dataURL},
+		SessionKey: "agent:main:mobile:direct:user1",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if resp != "saved" {
+		t.Fatalf("response = %q, want %q", resp, "saved")
+	}
+	if provider.calls != 1 {
+		t.Fatalf("calls = %d, want %d", provider.calls, 1)
+	}
+	if !slices.Equal(provider.mediaSeen, []bool{false}) {
+		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{false})
+	}
+	if !slices.Equal(provider.pathSeen, []bool{true}) {
+		t.Fatalf("pathSeen = %v, want %v", provider.pathSeen, []bool{true})
+	}
+
+	saved, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
+	}
+	if !slices.Equal(saved, pngBytes) {
+		t.Fatalf("saved bytes = %v, want %v", saved, pngBytes)
+	}
+}
+
+func TestAgentLoop_InlineImageAttachmentSaveAttachedImageToTmpPath(t *testing.T) {
+	workspace := t.TempDir()
+	targetPath := filepath.Join(os.TempDir(), "picoclaw-agent-test-attachment-1.png")
+	t.Cleanup(func() {
+		_ = os.Remove(targetPath)
+	})
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &inlineAttachmentSaveProvider{targetPath: targetPath}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
+
+	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "mobile",
+			ChatID:    "chat1",
+			ChatType:  "direct",
+			SenderID:  "user1",
+			MessageID: "m1",
+		},
+		Content:    "把附图保存到" + targetPath,
+		Media:      []string{dataURL},
+		SessionKey: "agent:main:mobile:direct:user1",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if resp != "saved" {
+		t.Fatalf("response = %q, want %q", resp, "saved")
+	}
+	if !slices.Equal(provider.mediaSeen, []bool{false}) {
+		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{false})
+	}
+	if !slices.Equal(provider.pathSeen, []bool{true}) {
+		t.Fatalf("pathSeen = %v, want %v", provider.pathSeen, []bool{true})
+	}
+
+	saved, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
+	}
+	if !slices.Equal(saved, pngBytes) {
+		t.Fatalf("saved bytes = %v, want %v", saved, pngBytes)
+	}
+}
+
+func TestAgentLoop_InlineImageAttachmentSaveIntentWithoutTargetUsesTempPath(t *testing.T) {
+	workspace := t.TempDir()
+	pngBytes := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+		0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &inlineAttachmentSaveProvider{
+		pathPrefix: filepath.Join(os.TempDir(), "picoclaw-attachments") + string(os.PathSeparator),
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
+	defer cancel()
+
+	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:   "mobile",
+			ChatID:    "chat1",
+			ChatType:  "direct",
+			SenderID:  "user1",
+			MessageID: "m1",
+		},
+		Content:    "保存图片到任意文件夹或根目录",
+		Media:      []string{dataURL},
+		SessionKey: "agent:main:mobile:direct:user1",
+	}))
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if resp != "saved" {
+		t.Fatalf("response = %q, want %q", resp, "saved")
+	}
+	if !slices.Equal(provider.mediaSeen, []bool{false}) {
+		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{false})
+	}
+	if !slices.Equal(provider.pathSeen, []bool{true}) {
+		t.Fatalf("pathSeen = %v, want %v", provider.pathSeen, []bool{true})
+	}
+	if provider.seenPath == "" {
+		t.Fatal("provider.seenPath is empty")
+	}
+
+	saved, err := os.ReadFile(provider.seenPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", provider.seenPath, err)
+	}
+	if !slices.Equal(saved, pngBytes) {
+		t.Fatalf("saved bytes = %v, want %v", saved, pngBytes)
 	}
 }
 

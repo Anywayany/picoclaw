@@ -23,11 +23,26 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  buildLauncherAuthPath,
+  getRedirectTargetFromLocation,
+  isMobilePathname,
+} from "@/features/mobile/redirect"
 import { useTheme } from "@/hooks/use-theme"
+import { cn } from "@/lib/utils"
 
 function LauncherLoginPage() {
   const { t, i18n } = useTranslation()
   const { theme, toggleTheme } = useTheme()
+  const redirectTarget = React.useMemo(() => getRedirectTargetFromLocation(), [])
+  const isMobileRedirect = React.useMemo(
+    () => isMobilePathname(redirectTarget),
+    [redirectTarget],
+  )
+  const setupPath = React.useMemo(
+    () => buildLauncherAuthPath("/launcher-setup", redirectTarget),
+    [redirectTarget],
+  )
   const [password, setPassword] = React.useState("")
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState("")
@@ -37,13 +52,13 @@ function LauncherLoginPage() {
     void getLauncherAuthStatus()
       .then((s) => {
         if (!s.initialized) {
-          globalThis.location.assign("/launcher-setup")
+          globalThis.location.assign(setupPath)
         }
       })
       .catch(() => {
         /* network error — stay on login page */
       })
-  }, [])
+  }, [setupPath])
 
   const loginWithPassword = React.useCallback(
     async (passwordValue: string) => {
@@ -52,11 +67,11 @@ function LauncherLoginPage() {
       try {
         const result = await postLauncherDashboardLogin(passwordValue)
         if (result.ok) {
-          globalThis.location.assign("/")
+          globalThis.location.assign(redirectTarget)
           return
         }
         if (result.status === 409) {
-          globalThis.location.assign("/launcher-setup")
+          globalThis.location.assign(setupPath)
           return
         }
         if (result.status === 401) {
@@ -70,7 +85,7 @@ function LauncherLoginPage() {
         setSubmitting(false)
       }
     },
-    [t],
+    [redirectTarget, setupPath, t],
   )
 
   const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -80,7 +95,15 @@ function LauncherLoginPage() {
 
   return (
     <div className="bg-background text-foreground flex min-h-dvh flex-col">
-      <header className="border-border/50 flex h-14 shrink-0 items-center justify-end gap-2 border-b px-4">
+      <header
+        className={cn(
+          "border-border/50 flex shrink-0 items-center gap-2 border-b px-4",
+          isMobileRedirect ? "h-12 justify-between" : "h-14 justify-end",
+        )}
+      >
+        {isMobileRedirect ? (
+          <div className="min-w-0 text-sm font-semibold">PicoClaw</div>
+        ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="icon" aria-label="Language">
@@ -111,8 +134,20 @@ function LauncherLoginPage() {
         </Button>
       </header>
 
-      <div className="flex flex-1 items-center justify-center p-4">
-        <Card className="w-full max-w-md" size="sm">
+      <div
+        className={cn(
+          "flex flex-1 justify-center p-4",
+          isMobileRedirect ? "items-start pt-16" : "items-center",
+        )}
+      >
+        <Card
+          className={cn(
+            "w-full max-w-md",
+            isMobileRedirect &&
+              "bg-background gap-6 rounded-none py-0 shadow-none ring-0",
+          )}
+          size="sm"
+        >
           <CardHeader>
             <CardTitle>{t("launcherLogin.title")}</CardTitle>
             <CardDescription>{t("launcherLogin.description")}</CardDescription>

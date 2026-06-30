@@ -120,6 +120,38 @@
       "local": "本地模型"
     }
   },
+  "mobile": {
+    "placeholder": "向 PicoClaw 发送消息...",
+    "emptyTitle": "PicoClaw",
+    "emptyDescription": "从 Wendi 开始一段对话。",
+    "gatewayHint": "PicoClaw 尚未就绪，请先在桌面控制台启动网关。",
+    "gateway": {
+      "running": "网关运行中",
+      "starting": "网关启动中...",
+      "restarting": "网关重启中...",
+      "stopping": "网关停止中...",
+      "stopped": "网关未运行",
+      "error": "网关异常",
+      "unknown": "正在检测网关..."
+    },
+    "connection": {
+      "connected": "已连接",
+      "connecting": "连接中...",
+      "disconnected": "已断开",
+      "error": "连接异常"
+    },
+    "disabled": {
+      "gatewayUnknown": "正在检测网关...",
+      "gatewayStarting": "网关正在启动...",
+      "gatewayRestarting": "网关正在重启...",
+      "gatewayStopping": "网关正在停止...",
+      "gatewayStopped": "网关未运行",
+      "gatewayError": "网关不可用",
+      "websocketConnecting": "正在连接...",
+      "websocketDisconnected": "聊天连接已断开",
+      "websocketError": "聊天连接失败"
+    }
+  },
   "header": {
     "logout": {
       "tooltip": "退出登录",

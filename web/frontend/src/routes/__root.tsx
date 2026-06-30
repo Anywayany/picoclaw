@@ -5,6 +5,12 @@ import { useEffect, useState } from "react"
 import { getLauncherAuthStatus } from "@/api/launcher-auth"
 import { AppLayout } from "@/components/app-layout"
 import { initializeChatStore } from "@/features/chat/controller"
+import {
+  buildLauncherAuthPath,
+  getCurrentMobileRedirectTarget,
+  isMobilePathname,
+} from "@/features/mobile/redirect"
+import { MobileShell } from "@/features/mobile/mobile-shell"
 import { isLauncherAuthPathname } from "@/lib/launcher-login-path"
 
 const RootLayout = () => {
@@ -29,6 +35,10 @@ const RootLayout = () => {
     routerState.matches.some(
       (m) => m.routeId === "/launcher-login" || m.routeId === "/launcher-setup",
     )
+  const isMobilePage =
+    isMobilePathname(windowPath) ||
+    isMobilePathname(routerState.pathname) ||
+    routerState.matches.some((m) => m.routeId === "/mobile")
 
   const [authError, setAuthError] = useState<string | null>(null)
 
@@ -37,10 +47,27 @@ const RootLayout = () => {
     if (isAuthPage) return
     void getLauncherAuthStatus()
       .then((s) => {
+        const authRedirectTarget = isMobilePage
+          ? getCurrentMobileRedirectTarget()
+          : "/"
         if (!s.initialized) {
-          globalThis.location.assign("/launcher-setup")
+          globalThis.location.assign(
+            isMobilePage
+              ? buildLauncherAuthPath(
+                  "/launcher-setup",
+                  authRedirectTarget,
+                )
+              : "/launcher-setup",
+          )
         } else if (!s.authenticated) {
-          globalThis.location.assign("/launcher-login")
+          globalThis.location.assign(
+            isMobilePage
+              ? buildLauncherAuthPath(
+                  "/launcher-login",
+                  authRedirectTarget,
+                )
+              : "/launcher-login",
+          )
         }
       })
       .catch((err: unknown) => {
@@ -49,7 +76,14 @@ const RootLayout = () => {
         // do NOT redirect: a subsequent successful login would loop straight back here.
         // launcherFetch handles 401 on real API calls regardless.
         if (err instanceof Error && /^status 40[13]$/.test(err.message)) {
-          globalThis.location.assign("/launcher-login")
+          globalThis.location.assign(
+            isMobilePage
+              ? buildLauncherAuthPath(
+                  "/launcher-login",
+                  getCurrentMobileRedirectTarget(),
+                )
+              : "/launcher-login",
+          )
         } else {
           setAuthError(
             err instanceof Error
@@ -58,7 +92,7 @@ const RootLayout = () => {
           )
         }
       })
-  }, [isAuthPage])
+  }, [isAuthPage, isMobilePage])
 
   useEffect(() => {
     if (isAuthPage) {
@@ -73,6 +107,18 @@ const RootLayout = () => {
         <Outlet />
         {import.meta.env.DEV ? <TanStackRouterDevtools /> : null}
       </>
+    )
+  }
+
+  if (isMobilePage) {
+    return (
+      <MobileShell
+        authError={authError}
+        onDismissAuthError={() => setAuthError(null)}
+        devtools={import.meta.env.DEV ? <TanStackRouterDevtools /> : null}
+      >
+        <Outlet />
+      </MobileShell>
     )
   }
 
