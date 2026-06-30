@@ -9,6 +9,7 @@
   - 06:14:07 用户问“保存到哪里了？”时，历史里仍包含图片附件，deepseek-v4-flash 不支持 image input，于是报错
   - 06:14:20 再发“你好”也报错，是同一个历史里的图片附件继续触发
 
+
   相关记录在：
   .runtime/picoclaw-home/workspace/sessions/sk_v1_38805d734e6cc6365ea48696b2fc73331e044d1729aa1f563c1b5d789457de0e.jsonl
   .runtime/picoclaw-home/logs/gateway.log

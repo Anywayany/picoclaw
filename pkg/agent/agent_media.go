@@ -64,6 +64,7 @@ func resolveMediaRefs(
 	store media.MediaStore,
 	maxSize int,
 	currentTurnStart int,
+	workspaceDir string,
 ) []providers.Message {
 	currentTurnStart = normalizeCurrentTurnStart(messages, currentTurnStart)
 
@@ -102,7 +103,7 @@ func resolveMediaRefs(
 
 		for _, ref := range m.Media {
 			if strings.HasPrefix(ref, "data:image/") && attachmentSaveIntent {
-				localPath, _, err := saveDataImageRef(ref, attachmentSaveTarget, maxSize)
+				localPath, _, err := saveDataImageRef(ref, attachmentSaveTarget, workspaceDir, maxSize)
 				if err != nil {
 					logger.WarnCF("agent", "Failed to save inline image attachment", map[string]any{
 						"path":  attachmentSaveTarget,
@@ -115,7 +116,32 @@ func resolveMediaRefs(
 				continue
 			}
 
+			// Convert current-turn inline data: URLs to temp files with path
+			// tags, consistent with how channel media:// refs are handled.
+			// This prevents sending image_url blocks to non-vision models
+			// (e.g. deepseek-v4-flash) while still letting the model access
+			// the file via load_image.
+			if strings.HasPrefix(ref, "data:image/") && m.Role == "user" && idx >= currentTurnStart {
+				localPath, mime, err := saveDataImageRef(ref, "", workspaceDir, maxSize)
+				if err != nil {
+					logger.WarnCF("agent", "Failed to save inline image for current turn", map[string]any{
+						"error": err.Error(),
+					})
+					resolved = append(resolved, ref)
+					continue
+				}
+				pathTags = append(pathTags, buildPathTag(mime, localPath))
+				continue
+			}
+
 			if !strings.HasPrefix(ref, "media://") {
+				// Drop inline data: URLs from historical messages. These are
+				// base64-encoded payloads that were already processed in the
+				// turn they were sent; replaying them on subsequent turns
+				// causes errors with non-vision models (e.g. deepseek-v4-flash).
+				if idx < currentTurnStart && strings.HasPrefix(ref, "data:") {
+					continue
+				}
 				resolved = append(resolved, ref)
 				continue
 			}
@@ -226,7 +252,7 @@ func hasImageFileExtension(path string) bool {
 	}
 }
 
-func saveDataImageRef(ref, targetPath string, maxSize int) (string, string, error) {
+func saveDataImageRef(ref, targetPath, defaultDir string, maxSize int) (string, string, error) {
 	comma := strings.IndexByte(ref, ',')
 	if comma < 0 {
 		return "", "", os.ErrInvalid
@@ -262,7 +288,11 @@ func saveDataImageRef(ref, targetPath string, maxSize int) (string, string, erro
 	cleanTarget := filepath.Clean(targetPath)
 	if cleanTarget == "." || cleanTarget == "" {
 		var err error
-		cleanTarget, err = createDefaultInlineAttachmentPath(mime)
+		if defaultDir != "" {
+			cleanTarget, err = createAttachmentPathInDir(defaultDir, mime)
+		} else {
+			cleanTarget, err = createDefaultInlineAttachmentPath(mime)
+		}
 		if err != nil {
 			return "", "", err
 		}
@@ -279,6 +309,38 @@ func saveDataImageRef(ref, targetPath string, maxSize int) (string, string, erro
 		return "", "", err
 	}
 	return cleanTarget, mime, nil
+}
+
+func createAttachmentPathInDir(baseDir, mime string) (string, error) {
+	dir := filepath.Join(baseDir, "tmp", "picoclaw-attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	pattern := "attachment-*"
+	switch mime {
+	case "image/jpeg":
+		pattern += ".jpg"
+	case "image/webp":
+		pattern += ".webp"
+	case "image/gif":
+		pattern += ".gif"
+	case "image/bmp":
+		pattern += ".bmp"
+	default:
+		pattern += ".png"
+	}
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func createDefaultInlineAttachmentPath(mime string) (string, error) {

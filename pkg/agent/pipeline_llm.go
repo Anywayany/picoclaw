@@ -31,7 +31,7 @@ func (p *Pipeline) CallLLM(
 
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
-		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize, exec.currentTurnStart)
+		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize, exec.currentTurnStart, ts.agent.Workspace)
 	}
 
 	// PreLLM: graceful terminal handling
@@ -394,6 +394,7 @@ func (p *Pipeline) CallLLM(
 					p.MediaStore,
 					maxMediaSize,
 					len(rebuilt)-len(protectedTurnTail),
+					ts.agent.Workspace,
 				)
 			}
 			originalHistoryCount := len(exec.history)
