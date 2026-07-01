@@ -3,10 +3,12 @@ import { useAtomValue } from "jotai"
 import { type ChangeEvent, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import { MobileSessionHistory } from "@/components/chat/mobile-session-history"
 import { Button } from "@/components/ui/button"
 import { buildChatImageAttachments } from "@/features/chat/image-input"
 import { MobileChatComposer } from "@/features/mobile/mobile-chat-composer"
 import { MobileMessageList } from "@/features/mobile/mobile-message-list"
+import { useChatModels } from "@/hooks/use-chat-models"
 import { useMobileGatewayPolling } from "@/features/mobile/use-mobile-gateway-polling"
 import { usePicoChat } from "@/hooks/use-pico-chat"
 import { cn } from "@/lib/utils"
@@ -71,10 +73,19 @@ export function MobileChatPage() {
   const [input, setInput] = useState("")
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const { status: gatewayStatus } = useAtomValue(gatewayAtom)
-  const { messages, connectionState, isTyping, sendMessage, newChat } =
+  const { messages, connectionState, isTyping, sendMessage, newChat, activeSessionId, switchSession } =
     usePicoChat()
 
   useMobileGatewayPolling()
+
+  const {
+    defaultModelName,
+    hasAvailableModels,
+    apiKeyModels,
+    oauthModels,
+    localModels,
+    handleSetDefault,
+  } = useChatModels({ isConnected: gatewayStatus === "running" })
 
   const disabledKey = getMobileDisabledKey({
     gatewayStatus,
@@ -135,9 +146,14 @@ export function MobileChatPage() {
 
   return (
     <div className="bg-background flex h-full min-h-0 flex-col">
-      <header className="border-border/60 bg-background/95 supports-[backdrop-filter]:bg-background/80 flex h-12 shrink-0 items-center justify-between gap-3 border-b px-3 backdrop-blur">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">PicoClaw</div>
+      <header className="border-border/60 bg-background/95 supports-[backdrop-filter]:bg-background/80 grid h-12 shrink-0 grid-cols-[36px_1fr_36px] items-center border-b px-3 backdrop-blur">
+        <MobileSessionHistory
+          activeSessionId={activeSessionId}
+          onSwitchSession={switchSession}
+          onNewChat={newChat}
+        />
+        <div className="min-w-0 text-center">
+          <div className="truncate text-sm font-semibold">DiAgent</div>
           <div
             className={cn(
               "truncate text-xs",
@@ -154,7 +170,7 @@ export function MobileChatPage() {
           type="button"
           variant="secondary"
           size="icon"
-          className="h-9 w-9 shrink-0"
+          className="h-9 w-9 shrink-0 justify-self-end"
           onClick={handleNewChat}
           aria-label={t("chat.newChat")}
           title={t("chat.newChat")}
@@ -178,6 +194,12 @@ export function MobileChatPage() {
         placeholder={placeholder}
         disabled={disabled}
         canSend={canSend}
+        defaultModelName={defaultModelName}
+        apiKeyModels={apiKeyModels}
+        oauthModels={oauthModels}
+        localModels={localModels}
+        hasAvailableModels={hasAvailableModels}
+        onSetDefaultModel={handleSetDefault}
         onInputChange={setInput}
         onFileChange={handleImageSelection}
         onAddImages={handleAddImages}

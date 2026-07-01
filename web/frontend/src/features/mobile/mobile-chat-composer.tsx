@@ -8,6 +8,8 @@ import {
 import { useTranslation } from "react-i18next"
 import TextareaAutosize from "react-textarea-autosize"
 
+import type { ModelInfo } from "@/api/models"
+import { ModelSelector } from "@/components/chat/model-selector"
 import { Button } from "@/components/ui/button"
 import { CHAT_IMAGE_ACCEPT } from "@/features/chat/image-input"
 import { cn } from "@/lib/utils"
@@ -20,6 +22,12 @@ interface MobileChatComposerProps {
   placeholder: string
   disabled: boolean
   canSend: boolean
+  defaultModelName: string
+  apiKeyModels: ModelInfo[]
+  oauthModels: ModelInfo[]
+  localModels: ModelInfo[]
+  hasAvailableModels: boolean
+  onSetDefaultModel: (modelName: string) => void
   onInputChange: (value: string) => void
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
   onAddImages: () => void
@@ -34,6 +42,12 @@ export function MobileChatComposer({
   placeholder,
   disabled,
   canSend,
+  defaultModelName,
+  apiKeyModels,
+  oauthModels,
+  localModels,
+  hasAvailableModels,
+  onSetDefaultModel,
   onInputChange,
   onFileChange,
   onAddImages,
@@ -73,6 +87,18 @@ export function MobileChatComposer({
       />
 
       <div className="mx-auto flex max-w-3xl flex-col gap-2">
+        {hasAvailableModels && (
+          <div className="flex">
+            <ModelSelector
+              defaultModelName={defaultModelName}
+              apiKeyModels={apiKeyModels}
+              oauthModels={oauthModels}
+              localModels={localModels}
+              onValueChange={onSetDefaultModel}
+            />
+          </div>
+        )}
+
         {attachments.length > 0 ? (
           <div className="flex gap-2 overflow-x-auto pb-1">
             {attachments.map((attachment, index) => (

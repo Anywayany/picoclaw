@@ -121,10 +121,10 @@
     }
   },
   "mobile": {
-    "placeholder": "Message PicoClaw...",
-    "emptyTitle": "PicoClaw",
-    "emptyDescription": "Start a conversation from Wendi.",
-    "gatewayHint": "PicoClaw is not ready. Start the gateway from the desktop dashboard.",
+    "placeholder": "Message DiAgent...",
+    "emptyTitle": "DiAgent",
+    "emptyDescription": "Start a conversation from DiAgent.",
+    "gatewayHint": "DiAgent is not ready. Start the gateway from the desktop dashboard.",
     "gateway": {
       "running": "Gateway running",
       "starting": "Gateway starting...",

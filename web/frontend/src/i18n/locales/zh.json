@@ -121,10 +121,10 @@
     }
   },
   "mobile": {
-    "placeholder": "向 PicoClaw 发送消息...",
-    "emptyTitle": "PicoClaw",
-    "emptyDescription": "从 Wendi 开始一段对话。",
-    "gatewayHint": "PicoClaw 尚未就绪，请先在桌面控制台启动网关。",
+    "placeholder": "向 DiAgent 发送消息...",
+    "emptyTitle": "DiAgent",
+    "emptyDescription": "从 DiAgent 开始一段对话。",
+    "gatewayHint": "DiAgent 尚未就绪，请先在桌面控制台启动网关。",
     "gateway": {
       "running": "网关运行中",
       "starting": "网关启动中...",
