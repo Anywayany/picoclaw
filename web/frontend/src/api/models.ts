@@ -63,6 +63,10 @@ interface ModelActionResponse {
   status: string
   index?: number
   default_model?: string
+  applied?: boolean
+  apply_method?: string
+  apply_error?: string
+  restart_required?: boolean
 }
 
 const BASE_URL = ""

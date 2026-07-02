@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2301,6 +2302,122 @@ func TestHandleSetDefaultModel_RejectsElevenLabsASRProvider(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "cannot be used as the default chat model") {
 		t.Fatalf("body = %q, want default chat model rejection", rec.Body.String())
+	}
+}
+
+func TestHandleSetDefaultModel_AppliesRunningGatewayConfig(t *testing.T) {
+	configPath, cleanup := setupOAuthTestEnv(t)
+	defer cleanup()
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.ModelList = []*config.ModelConfig{
+		{ModelName: "first-model", Provider: "openai", Model: "gpt-4o"},
+		{ModelName: "second-model", Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	cfg.Agents.Defaults.ModelName = "first-model"
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	home := os.Getenv("PICOCLAW_HOME")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".picoclaw.pid"),
+		[]byte(fmt.Sprintf(`{"pid":%d,"token":"reload-token","version":"test","port":18790,"host":"127.0.0.1"}`, os.Getpid())),
+		0o600,
+	); err != nil {
+		t.Fatalf("WriteFile(pid) error = %v", err)
+	}
+
+	origGatewayReloadDo := gatewayReloadDo
+	origGatewayProcessMatcher := gatewayProcessMatcher
+	gateway.mu.Lock()
+	origBootDefaultModel := gateway.bootDefaultModel
+	origBootConfigSignature := gateway.bootConfigSignature
+	origPidData := gateway.pidData
+	origRuntimeStatus := gateway.runtimeStatus
+	gateway.bootDefaultModel = "first-model"
+	gateway.bootConfigSignature = computeConfigSignature(cfg)
+	gateway.pidData = nil
+	gateway.runtimeStatus = "running"
+	gateway.mu.Unlock()
+	t.Cleanup(func() {
+		gatewayReloadDo = origGatewayReloadDo
+		gatewayProcessMatcher = origGatewayProcessMatcher
+		gateway.mu.Lock()
+		gateway.bootDefaultModel = origBootDefaultModel
+		gateway.bootConfigSignature = origBootConfigSignature
+		gateway.pidData = origPidData
+		gateway.runtimeStatus = origRuntimeStatus
+		gateway.mu.Unlock()
+	})
+
+	reloadCalled := false
+	gatewayProcessMatcher = func(pid int) (bool, bool) {
+		if pid != os.Getpid() {
+			t.Fatalf("pid = %d, want current pid", pid)
+		}
+		return true, true
+	}
+	gatewayReloadDo = func(req *http.Request) (*http.Response, error) {
+		reloadCalled = true
+		if req.Method != http.MethodPost {
+			t.Fatalf("reload method = %s, want POST", req.Method)
+		}
+		if req.URL.Path != "/reload" {
+			t.Fatalf("reload path = %s, want /reload", req.URL.Path)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer reload-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Body:       io.NopCloser(strings.NewReader(`{"status":"reload completed"}`)),
+			Header:     make(http.Header),
+		}, nil
+	}
+
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models/default", bytes.NewBufferString(`{
+		"model_name": "second-model"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !reloadCalled {
+		t.Fatal("expected gateway reload to be called")
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if resp["applied"] != true {
+		t.Fatalf("applied = %#v, want true", resp["applied"])
+	}
+	if resp["restart_required"] != false {
+		t.Fatalf("restart_required = %#v, want false", resp["restart_required"])
+	}
+	if resp["apply_method"] != "reload" {
+		t.Fatalf("apply_method = %#v, want reload", resp["apply_method"])
+	}
+
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if gateway.bootDefaultModel != "second-model" {
+		t.Fatalf("bootDefaultModel = %q, want second-model", gateway.bootDefaultModel)
 	}
 }
 

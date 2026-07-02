@@ -187,6 +187,7 @@
     "saveChangesTitle": "有未保存的配置更改",
     "restartRequiredTitle": "需要重启服务",
     "restartRequiredDesc": "{{name}} 的最新配置已保存。重启服务后才能正式生效。",
+    "appliedDesc": "变更已自动应用到正在运行的服务。",
     "fix": "修复"
   },
   "labels": {

@@ -154,7 +154,8 @@
     "fix": "ঠিক করুন",
     "saveChangesTitle": "আপনার অসংরক্ষিত কনফিগারেশন পরিবর্তন রয়েছে",
     "restartRequiredTitle": "গেটওয়ে পুনরায় চালু করা প্রয়োজন",
-    "restartRequiredDesc": "সর্বশেষ {{name}} কনফিগারেশন সংরক্ষিত হয়েছে। কার্যকর হতে গেটওয়ে পুনরায় চালু করুন।"
+    "restartRequiredDesc": "সর্বশেষ {{name}} কনফিগারেশন সংরক্ষিত হয়েছে। কার্যকর হতে গেটওয়ে পুনরায় চালু করুন।",
+    "appliedDesc": "The change has been applied to the running gateway."
   },
   "labels": {
     "loading": "লোড হচ্ছে..."

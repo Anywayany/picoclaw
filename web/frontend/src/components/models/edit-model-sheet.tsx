@@ -365,7 +365,7 @@ export function EditModelSheet({
         model.streaming?.enabled === true || form.streamingEnabled
           ? { enabled: form.streamingEnabled }
           : undefined
-      await updateModel(model.index, {
+      const updateResult = await updateModel(model.index, {
         model_name: model.model_name,
         provider: provider,
         model: modelId,
@@ -388,15 +388,18 @@ export function EditModelSheet({
         extra_body: extraBody,
         custom_headers: customHeaders,
       })
-      if (setAsDefault && !model.is_default) {
-        await setDefaultModel(model.model_name)
-      }
+      const defaultResult =
+        setAsDefault && !model.is_default
+          ? await setDefaultModel(model.model_name)
+          : undefined
+      const applyResult = defaultResult ?? updateResult
       const gateway = await refreshGatewayState({ force: true })
       showSaveSuccessOrRestartToast(
         t,
         t("models.edit.saveSuccess"),
         model.model_name,
-        gateway?.restartRequired === true,
+        applyResult.restart_required ?? gateway?.restartRequired === true,
+        applyResult.applied === true,
       )
       onSaved()
       onClose()

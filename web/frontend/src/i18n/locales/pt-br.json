@@ -155,7 +155,8 @@
     "fix": "Corrigir",
     "saveChangesTitle": "Você tem alterações de configuração não salvas",
     "restartRequiredTitle": "Reinício do gateway necessário",
-    "restartRequiredDesc": "A configuração mais recente de {{name}} foi salva. Reinicie o gateway para que tenha efeito."
+    "restartRequiredDesc": "A configuração mais recente de {{name}} foi salva. Reinicie o gateway para que tenha efeito.",
+    "appliedDesc": "The change has been applied to the running gateway."
   },
   "labels": {
     "loading": "Carregando..."

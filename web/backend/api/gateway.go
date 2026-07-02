@@ -112,7 +112,101 @@ var gatewayHealthGet = func(url string, timeout time.Duration) (*http.Response, 
 	return client.Get(url)
 }
 
+var gatewayReloadDo = func(req *http.Request) (*http.Response, error) {
+	client := http.Client{Timeout: 45 * time.Second}
+	return client.Do(req)
+}
+
 var gatewayProcessMatcher = isLikelyGatewayProcess
+
+type gatewayConfigApplyResult struct {
+	Applied         bool   `json:"applied"`
+	ApplyMethod     string `json:"apply_method,omitempty"`
+	ApplyError      string `json:"apply_error,omitempty"`
+	RestartRequired bool   `json:"restart_required"`
+}
+
+func (r gatewayConfigApplyResult) appendTo(data map[string]any) {
+	data["applied"] = r.Applied
+	data["restart_required"] = r.RestartRequired
+	if r.ApplyMethod != "" {
+		data["apply_method"] = r.ApplyMethod
+	}
+	if r.ApplyError != "" {
+		data["apply_error"] = r.ApplyError
+	}
+}
+
+func (h *Handler) applyGatewayConfigChange(cfg *config.Config) gatewayConfigApplyResult {
+	result := gatewayConfigApplyResult{ApplyMethod: "none"}
+	if cfg == nil {
+		result.RestartRequired = true
+		result.ApplyError = "config unavailable"
+		return result
+	}
+
+	pidData := h.sanitizeGatewayPidData(ppid.ReadPidFileWithCheck(globalConfigDir()), cfg)
+	if pidData == nil {
+		return result
+	}
+	if strings.TrimSpace(pidData.Token) == "" {
+		result.RestartRequired = true
+		result.ApplyError = "gateway reload token missing"
+		return result
+	}
+
+	port := pidData.Port
+	if port == 0 {
+		port = cfg.Gateway.Port
+	}
+	if port == 0 {
+		port = 18790
+	}
+	host := gatewayProbeHost(pidData.Host)
+	if host == "" {
+		host = gatewayProbeHost(h.effectiveGatewayBindHost(cfg))
+	}
+	reloadURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/reload"
+
+	req, err := http.NewRequest(http.MethodPost, reloadURL, nil)
+	if err != nil {
+		result.RestartRequired = true
+		result.ApplyError = err.Error()
+		return result
+	}
+	req.Header.Set("Authorization", "Bearer "+pidData.Token)
+
+	resp, err := gatewayReloadDo(req)
+	if err != nil {
+		result.RestartRequired = true
+		result.ApplyMethod = "reload"
+		result.ApplyError = err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		result.RestartRequired = true
+		result.ApplyMethod = "reload"
+		result.ApplyError = strings.TrimSpace(string(body))
+		if result.ApplyError == "" {
+			result.ApplyError = resp.Status
+		}
+		return result
+	}
+
+	gateway.mu.Lock()
+	gateway.pidData = pidData
+	gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
+	gateway.bootConfigSignature = computeConfigSignature(cfg)
+	setGatewayRuntimeStatusLocked("running")
+	gateway.mu.Unlock()
+
+	result.Applied = true
+	result.ApplyMethod = "reload"
+	return result
+}
 
 // getGatewayHealth checks the gateway health endpoint and returns the status response.
 // Returns (*health.StatusResponse, statusCode, error). If error is not nil, the other values are not valid.

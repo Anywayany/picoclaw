@@ -153,7 +153,8 @@
     "fix": "Opravit",
     "saveChangesTitle": "Máte neuložené změny konfigurace",
     "restartRequiredTitle": "Vyžadován restart gateway",
-    "restartRequiredDesc": "Nejnovější konfigurace {{name}} byla uložena. Pro aktivaci restartujte gateway."
+    "restartRequiredDesc": "Nejnovější konfigurace {{name}} byla uložena. Pro aktivaci restartujte gateway.",
+    "appliedDesc": "The change has been applied to the running gateway."
   },
   "labels": {
     "loading": "Načítám..."

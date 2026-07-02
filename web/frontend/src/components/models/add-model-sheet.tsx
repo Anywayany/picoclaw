@@ -405,15 +405,16 @@ export function AddModelSheet({
         extra_body: extraBody,
         custom_headers: customHeaders,
       })
-      if (setAsDefault) {
-        await setDefaultModel(modelName)
-      }
+      const defaultResult = setAsDefault
+        ? await setDefaultModel(modelName)
+        : undefined
       const gateway = await refreshGatewayState({ force: true })
       showSaveSuccessOrRestartToast(
         t,
         t("models.add.saveSuccess"),
         modelName,
-        gateway?.restartRequired === true,
+        defaultResult?.restart_required ?? gateway?.restartRequired === true,
+        defaultResult?.applied === true,
       )
       onSaved()
       onClose()

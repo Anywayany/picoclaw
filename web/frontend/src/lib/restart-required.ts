@@ -12,10 +12,13 @@ export function showSaveSuccessOrRestartToast(
   savedMessage: string,
   name: string,
   restartRequired: boolean,
+  applied = false,
 ) {
   if (restartRequired) {
     showRestartRequiredToast(t, name)
     return
   }
-  toast.success(savedMessage)
+  toast.success(savedMessage, {
+    description: applied ? t("common.appliedDesc") : undefined,
+  })
 }

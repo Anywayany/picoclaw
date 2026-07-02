@@ -468,12 +468,16 @@ func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
 		return
 	}
-	if cfg.Agents.Defaults.ModelName == cfg.ModelList[idx].ModelName &&
+	oldDefaultModelName := strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
+	if oldDefaultModelName == cfg.ModelList[idx].ModelName &&
 		!defaultModelAllowedForModelConfig(&mc.ModelConfig) {
 		// Allow users to recover from legacy/invalid defaults by saving the model
 		// and clearing the default chat model reference in the same write.
 		cfg.Agents.Defaults.ModelName = ""
 	}
+
+	affectsDefaultModel := oldDefaultModelName != "" &&
+		(oldDefaultModelName == cfg.ModelList[idx].ModelName || oldDefaultModelName == mc.ModelName)
 
 	cfg.ModelList[idx] = &mc.ModelConfig
 	normalizeStoredModelProviders(cfg)
@@ -485,8 +489,14 @@ func (h *Handler) handleUpdateModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	response := map[string]any{"status": "ok"}
+	if affectsDefaultModel {
+		applyResult := h.applyGatewayConfigChange(cfg)
+		applyResult.appendTo(response)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleDeleteModel removes a model configuration entry at the given index.
@@ -597,11 +607,15 @@ func (h *Handler) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	applyResult := h.applyGatewayConfigChange(cfg)
+	response := map[string]any{
 		"status":        "ok",
 		"default_model": req.ModelName,
-	})
+	}
+	applyResult.appendTo(response)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // maskAPIKey returns a masked version of an API key for safe display.

@@ -71,7 +71,7 @@ type services struct {
 	DeviceService    *devices.Service
 	HealthServer     *health.Server
 	VoiceAgentCancel context.CancelFunc
-	manualReloadChan chan struct{}
+	manualReloadChan chan chan error
 	reloading        atomic.Bool
 	authToken        string
 }
@@ -223,20 +223,34 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
 	closeListeners = false
 
-	// Setup manual reload channel for /reload endpoint
-	manualReloadChan := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup manual reload channel for /reload endpoint. The HTTP handler waits
+	// for the main gateway loop to complete the reload so callers know whether
+	// the new provider/config is actually active.
+	manualReloadChan := make(chan chan error, 1)
 	runningServices.manualReloadChan = manualReloadChan
 	reloadTrigger := func() error {
 		if !runningServices.reloading.CompareAndSwap(false, true) {
 			return fmt.Errorf("reload already in progress")
 		}
+		resultCh := make(chan error, 1)
 		select {
-		case manualReloadChan <- struct{}{}:
-			return nil
+		case manualReloadChan <- resultCh:
+		case <-ctx.Done():
+			runningServices.reloading.Store(false)
+			return ctx.Err()
 		default:
 			// Should not happen, but reset flag if channel is full
 			runningServices.reloading.Store(false)
 			return fmt.Errorf("reload already queued")
+		}
+		select {
+		case err := <-resultCh:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	runningServices.HealthServer.SetReloadFunc(reloadTrigger)
@@ -246,9 +260,6 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 		fmt.Printf("✓ Gateway started on %s\n", net.JoinHostPort(bindHost, strconv.Itoa(cfg.Gateway.Port)))
 	}
 	fmt.Println("Press Ctrl+C to stop")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	go agentLoop.Run(ctx)
 
@@ -278,17 +289,19 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			if err != nil {
 				logger.Errorf("Config reload failed: %v", err)
 			}
-		case <-manualReloadChan:
+		case resultCh := <-manualReloadChan:
 			logger.Info("Manual reload triggered via /reload endpoint")
 			newCfg, err := config.LoadConfig(configPath)
 			if err != nil {
 				logger.Errorf("Error loading config for manual reload: %v", err)
 				runningServices.reloading.Store(false)
+				resultCh <- fmt.Errorf("error loading config for manual reload: %w", err)
 				continue
 			}
 			if err = newCfg.ValidateModelList(); err != nil {
 				logger.Errorf("Config validation failed: %v", err)
 				runningServices.reloading.Store(false)
+				resultCh <- fmt.Errorf("config validation failed: %w", err)
 				continue
 			}
 			err = executeReload(ctx, agentLoop, newCfg, &provider, runningServices, msgBus, allowEmptyStartup, debug)
@@ -297,6 +310,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			} else {
 				logger.Info("Manual reload completed successfully")
 			}
+			resultCh <- err
 		}
 	}
 }
