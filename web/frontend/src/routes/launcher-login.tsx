@@ -102,7 +102,7 @@ function LauncherLoginPage() {
         )}
       >
         {isMobileRedirect ? (
-          <div className="min-w-0 text-sm font-semibold">PicoClaw</div>
+          <div className="min-w-0 text-sm font-semibold">DiAgent</div>
         ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
