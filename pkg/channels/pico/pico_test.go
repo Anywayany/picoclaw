@@ -2,6 +2,7 @@ package pico
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,6 +64,76 @@ func TestHandleMessageSend_ForwardsMessageMetadata(t *testing.T) {
 		}
 		if got := inbound.Context.Raw["session_id"]; got != "sess-1" {
 			t.Fatalf("session_id raw = %q, want sess-1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected inbound pico message")
+	}
+}
+
+func TestHandleMessageSend_StoresFileAttachment(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+	bc := &config.Channel{Type: config.ChannelPico, Enabled: true}
+	cfg := &config.PicoSettings{}
+	cfg.SetToken("test-token")
+	ch, err := NewPicoChannel(bc, cfg, msgBus)
+	if err != nil {
+		t.Fatalf("NewPicoChannel: %v", err)
+	}
+	ch.ctx = context.Background()
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+	workspace := t.TempDir()
+	ch.SetWorkspaceDir(workspace)
+
+	body := []byte("hello from attachment")
+	dataURL := "data:text/plain;base64," + base64.StdEncoding.EncodeToString(body)
+	ch.handleMessageSend(&picoConn{id: "conn-1", sessionID: "sess-file"}, PicoMessage{
+		Type: TypeMessageSend,
+		ID:   "msg-file",
+		Payload: map[string]any{
+			PayloadKeyContent: "read this file",
+			"attachments": []any{
+				map[string]any{
+					"type":         "file",
+					"url":          dataURL,
+					"filename":     "note.txt",
+					"content_type": "text/plain",
+				},
+			},
+		},
+	})
+
+	select {
+	case inbound := <-msgBus.InboundChan():
+		if inbound.Content != "read this file" {
+			t.Fatalf("content = %q, want read this file", inbound.Content)
+		}
+		if len(inbound.Media) != 1 {
+			t.Fatalf("media count = %d, want 1", len(inbound.Media))
+		}
+		if !strings.HasPrefix(inbound.Media[0], "media://") {
+			t.Fatalf("media ref = %q, want media:// ref", inbound.Media[0])
+		}
+		localPath, meta, err := store.ResolveWithMeta(inbound.Media[0])
+		if err != nil {
+			t.Fatalf("ResolveWithMeta() error = %v", err)
+		}
+		wantDir := filepath.Join(workspace, "tmp", "picoclaw-attachments") + string(os.PathSeparator)
+		if !strings.HasPrefix(localPath, wantDir) {
+			t.Fatalf("local path = %q, want prefix %q", localPath, wantDir)
+		}
+		if meta.Filename != "note.txt" {
+			t.Fatalf("filename = %q, want note.txt", meta.Filename)
+		}
+		if meta.ContentType != "text/plain" {
+			t.Fatalf("content type = %q, want text/plain", meta.ContentType)
+		}
+		got, err := os.ReadFile(localPath)
+		if err != nil {
+			t.Fatalf("ReadFile() error = %v", err)
+		}
+		if string(got) != string(body) {
+			t.Fatalf("body = %q, want %q", string(got), string(body))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected inbound pico message")

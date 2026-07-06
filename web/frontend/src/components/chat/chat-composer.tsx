@@ -1,4 +1,10 @@
-import { IconArrowUp, IconPhotoPlus, IconX } from "@tabler/icons-react"
+import {
+  IconArrowUp,
+  IconFilePlus,
+  IconFileText,
+  IconPhotoPlus,
+  IconX,
+} from "@tabler/icons-react"
 import {
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
@@ -30,6 +36,7 @@ interface ChatComposerProps {
   attachments: ChatAttachment[]
   onInputChange: (value: string) => void
   onAddImages: () => void
+  onAddFiles: () => void
   onPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void
   onDragEnter: (event: ReactDragEvent<HTMLDivElement>) => void
   onDragLeave: (event: ReactDragEvent<HTMLDivElement>) => void
@@ -49,6 +56,7 @@ export function ChatComposer({
   attachments,
   onInputChange,
   onAddImages,
+  onAddFiles,
   onPaste,
   onDragEnter,
   onDragLeave,
@@ -118,17 +126,26 @@ export function ChatComposer({
                   key={`${attachment.url}-${index}`}
                   className="bg-background relative h-20 w-20 overflow-hidden rounded-xl border"
                 >
-                  <img
-                    src={attachment.url}
-                    alt={attachment.filename || t("chat.uploadedImage")}
-                    className="h-full w-full object-cover"
-                  />
+                  {attachment.type === "image" ? (
+                    <img
+                      src={attachment.url}
+                      alt={attachment.filename || t("chat.uploadedImage")}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-center">
+                      <IconFileText className="text-muted-foreground size-6" />
+                      <span className="line-clamp-2 text-[10px] leading-tight">
+                        {attachment.filename || t("chat.uploadedFile")}
+                      </span>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => onRemoveAttachment(index)}
                     className="bg-background/85 text-foreground absolute top-1 right-1 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm transition hover:bg-white"
-                    aria-label={t("chat.removeImage")}
-                    title={t("chat.removeImage")}
+                    aria-label={t("chat.removeAttachment")}
+                    title={t("chat.removeAttachment")}
                   >
                     <IconX className="h-3.5 w-3.5" />
                   </button>
@@ -173,6 +190,18 @@ export function ChatComposer({
               >
                 <IconPhotoPlus className="size-4" />
               </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground hover:text-foreground h-8 w-8 rounded-full"
+                onClick={onAddFiles}
+                disabled={!canInput}
+                aria-label={t("chat.attachFile")}
+                title={t("chat.attachFile")}
+              >
+                <IconFilePlus className="size-4" />
+              </Button>
             </div>
 
             <div className="flex items-center gap-1.5">
@@ -203,7 +232,7 @@ export function ChatComposer({
         <div
           aria-hidden={!hasInput}
           className={cn(
-            "border-border/50 bg-muted/55 text-muted-foreground mt-2 inline-flex items-center rounded-md border px-3 py-1 text-[11px] shadow-sm transition-all duration-200 dark:bg-muted/45",
+            "border-border/50 bg-muted/55 text-muted-foreground dark:bg-muted/45 mt-2 inline-flex items-center rounded-md border px-3 py-1 text-[11px] shadow-sm transition-all duration-200",
             hasInput
               ? "translate-y-0 opacity-100"
               : "pointer-events-none -translate-y-1 opacity-0",

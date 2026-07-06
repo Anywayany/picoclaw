@@ -1,4 +1,10 @@
-import { IconArrowUp, IconPhotoPlus, IconX } from "@tabler/icons-react"
+import {
+  IconArrowUp,
+  IconFilePlus,
+  IconFileText,
+  IconPhotoPlus,
+  IconX,
+} from "@tabler/icons-react"
 import {
   type ChangeEvent,
   type KeyboardEvent,
@@ -18,6 +24,7 @@ import type { ChatAttachment } from "@/store/chat"
 interface MobileChatComposerProps {
   input: string
   attachments: ChatAttachment[]
+  imageInputRef: RefObject<HTMLInputElement | null>
   fileInputRef: RefObject<HTMLInputElement | null>
   placeholder: string
   disabled: boolean
@@ -29,8 +36,10 @@ interface MobileChatComposerProps {
   hasAvailableModels: boolean
   onSetDefaultModel: (modelName: string) => void
   onInputChange: (value: string) => void
+  onImageChange: (event: ChangeEvent<HTMLInputElement>) => void
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
   onAddImages: () => void
+  onAddFiles: () => void
   onRemoveAttachment: (index: number) => void
   onSend: () => void
 }
@@ -38,6 +47,7 @@ interface MobileChatComposerProps {
 export function MobileChatComposer({
   input,
   attachments,
+  imageInputRef,
   fileInputRef,
   placeholder,
   disabled,
@@ -49,8 +59,10 @@ export function MobileChatComposer({
   hasAvailableModels,
   onSetDefaultModel,
   onInputChange,
+  onImageChange,
   onFileChange,
   onAddImages,
+  onAddFiles,
   onRemoveAttachment,
   onSend,
 }: MobileChatComposerProps) {
@@ -78,9 +90,16 @@ export function MobileChatComposer({
   return (
     <div className="border-border/60 bg-background shrink-0 border-t px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
       <input
-        ref={fileInputRef}
+        ref={imageInputRef}
         type="file"
         accept={CHAT_IMAGE_ACCEPT}
+        multiple
+        className="hidden"
+        onChange={onImageChange}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
         multiple
         className="hidden"
         onChange={onFileChange}
@@ -106,17 +125,26 @@ export function MobileChatComposer({
                 key={`${attachment.url}-${index}`}
                 className="bg-muted relative h-16 w-16 shrink-0 overflow-hidden rounded-md border"
               >
-                <img
-                  src={attachment.url}
-                  alt={attachment.filename || t("chat.uploadedImage")}
-                  className="h-full w-full object-cover"
-                />
+                {attachment.type === "image" ? (
+                  <img
+                    src={attachment.url}
+                    alt={attachment.filename || t("chat.uploadedImage")}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-1.5 text-center">
+                    <IconFileText className="text-muted-foreground size-5" />
+                    <span className="line-clamp-2 text-[9px] leading-tight">
+                      {attachment.filename || t("chat.uploadedFile")}
+                    </span>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => onRemoveAttachment(index)}
                   className="bg-background/90 text-foreground absolute top-1 right-1 inline-flex h-5 w-5 items-center justify-center rounded-full border shadow-sm"
-                  aria-label={t("chat.removeImage")}
-                  title={t("chat.removeImage")}
+                  aria-label={t("chat.removeAttachment")}
+                  title={t("chat.removeAttachment")}
                 >
                   <IconX className="size-3" />
                 </button>
@@ -137,6 +165,18 @@ export function MobileChatComposer({
             title={t("chat.attachImage")}
           >
             <IconPhotoPlus className="size-5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground hover:text-foreground h-9 w-9 shrink-0 rounded-md"
+            onClick={onAddFiles}
+            disabled={disabled}
+            aria-label={t("chat.attachFile")}
+            title={t("chat.attachFile")}
+          >
+            <IconFilePlus className="size-5" />
           </Button>
 
           <TextareaAutosize

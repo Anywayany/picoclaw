@@ -23,6 +23,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -105,6 +106,7 @@ type PicoChannel struct {
 	cancel             context.CancelFunc
 	progress           *channels.ToolFeedbackAnimator
 	deleteMessageFn    func(context.Context, string, string) error
+	workspaceDir       string
 }
 
 // NewPicoChannel creates a new Pico Protocol channel.
@@ -148,6 +150,12 @@ func NewPicoChannel(
 	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	ch.deleteMessageFn = ch.DeleteMessage
 	return ch, nil
+}
+
+// SetWorkspaceDir configures where inbound file uploads should be materialized
+// so agent tools can access them through workspace-scoped paths.
+func (c *PicoChannel) SetWorkspaceDir(dir string) {
+	c.workspaceDir = strings.TrimSpace(dir)
 }
 
 // createAndAddConnection checks MaxConnections and registers a connection atomically.
@@ -1170,7 +1178,16 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 // handleMessageSend processes an inbound message.send from a client.
 func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 	content, _ := msg.Payload["content"].(string)
-	media, err := parseInlineImageMedia(msg.Payload)
+	sessionID := msg.SessionID
+	if sessionID == "" {
+		sessionID = pc.sessionID
+	}
+	chatID := "pico:" + sessionID
+	if msg.ID == "" {
+		msg.ID = uuid.NewString()
+	}
+	mediaScope := channels.BuildMediaScope("pico", chatID, msg.ID)
+	inboundMedia, err := c.parseInboundMedia(msg.Payload, mediaScope)
 	if err != nil {
 		errMsg := newErrorWithPayload("invalid_media", err.Error(), map[string]any{
 			"request_id": msg.ID,
@@ -1179,7 +1196,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		return
 	}
 
-	if strings.TrimSpace(content) == "" && len(media) == 0 {
+	if strings.TrimSpace(content) == "" && len(inboundMedia) == 0 {
 		errMsg := newErrorWithPayload("empty_content", "message content is empty", map[string]any{
 			"request_id": msg.ID,
 		})
@@ -1187,12 +1204,6 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		return
 	}
 
-	sessionID := msg.SessionID
-	if sessionID == "" {
-		sessionID = pc.sessionID
-	}
-
-	chatID := "pico:" + sessionID
 	senderID := "pico-user"
 
 	metadata := map[string]string{
@@ -1204,7 +1215,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 	logger.DebugCF("pico", "Received message", map[string]any{
 		"session_id": sessionID,
 		"preview":    truncate(content, 50),
-		"media":      len(media),
+		"media":      len(inboundMedia),
 	})
 
 	sender := bus.SenderInfo{
@@ -1226,7 +1237,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		Raw:       metadata,
 	}
 
-	c.HandleInboundContext(c.ctx, chatID, content, media, inboundCtx, sender)
+	c.HandleInboundContext(c.ctx, chatID, content, inboundMedia, inboundCtx, sender)
 }
 
 // truncate truncates a string to maxLen runes.
@@ -1255,6 +1266,25 @@ func parseInlineImageMedia(payload map[string]any) ([]string, error) {
 	media = append(media, attachments...)
 
 	return media, nil
+}
+
+func (c *PicoChannel) parseInboundMedia(payload map[string]any, scope string) ([]string, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+
+	mediaValues, err := parseInlineImageValues(payload["media"])
+	if err != nil {
+		return nil, err
+	}
+
+	attachments, err := c.parseInboundAttachments(payload["attachments"], scope)
+	if err != nil {
+		return nil, err
+	}
+	mediaValues = append(mediaValues, attachments...)
+
+	return mediaValues, nil
 }
 
 func parseInlineImageValues(raw any) ([]string, error) {
@@ -1337,6 +1367,57 @@ func parseInlineImageAttachments(raw any) ([]string, error) {
 	return media, nil
 }
 
+func (c *PicoChannel) parseInboundAttachments(raw any, scope string) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	values, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("attachments must be an array")
+	}
+
+	mediaValues := make([]string, 0, len(values))
+	for i, item := range values {
+		attachment, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("attachments[%d]: attachment must be an object", i)
+		}
+
+		attachmentType, _ := attachment["type"].(string)
+		attachmentType = strings.ToLower(strings.TrimSpace(attachmentType))
+		if attachmentType == "" || attachmentType == "image" {
+			value, err := inlineImageValue(attachment)
+			if err != nil {
+				if attachmentType == "image" {
+					return nil, fmt.Errorf("attachments[%d]: %w", i, err)
+				}
+				continue
+			}
+			if !strings.HasPrefix(value, "data:") {
+				continue
+			}
+			if err := validateInlineImageDataURL(value); err != nil {
+				return nil, fmt.Errorf("attachments[%d]: %w", i, err)
+			}
+			mediaValues = append(mediaValues, value)
+			continue
+		}
+
+		value, err := inlineAttachmentValue(attachment)
+		if err != nil {
+			return nil, fmt.Errorf("attachments[%d]: %w", i, err)
+		}
+		ref, err := c.storeInlineAttachment(value, attachment, scope)
+		if err != nil {
+			return nil, fmt.Errorf("attachments[%d]: %w", i, err)
+		}
+		mediaValues = append(mediaValues, ref)
+	}
+
+	return mediaValues, nil
+}
+
 func inlineImageValue(item any) (string, error) {
 	switch value := item.(type) {
 	case string:
@@ -1355,6 +1436,126 @@ func inlineImageValue(item any) (string, error) {
 	default:
 		return "", fmt.Errorf("image payload must be a string or object")
 	}
+}
+
+func inlineAttachmentValue(item map[string]any) (string, error) {
+	for _, key := range []string{"url", "data_url"} {
+		if raw, ok := item[key].(string); ok && strings.TrimSpace(raw) != "" {
+			return strings.TrimSpace(raw), nil
+		}
+	}
+	return "", fmt.Errorf("attachment payload must include url or data_url")
+}
+
+func inlineAttachmentFilename(item map[string]any) string {
+	if raw, ok := item["filename"].(string); ok {
+		filename := filepath.Base(strings.TrimSpace(raw))
+		if filename != "." && filename != string(filepath.Separator) && filename != "" {
+			return filename
+		}
+	}
+	return "attachment"
+}
+
+func inlineAttachmentContentType(item map[string]any) string {
+	if raw, ok := item["content_type"].(string); ok {
+		return strings.TrimSpace(raw)
+	}
+	if raw, ok := item["contentType"].(string); ok {
+		return strings.TrimSpace(raw)
+	}
+	return ""
+}
+
+func parseInlineAttachmentDataURL(value string) (string, []byte, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil, fmt.Errorf("attachment payload is empty")
+	}
+	if !strings.HasPrefix(value, "data:") {
+		return "", nil, fmt.Errorf("only inline attachment data URLs are supported")
+	}
+
+	header, payload, found := strings.Cut(value, ",")
+	if !found || strings.TrimSpace(payload) == "" {
+		return "", nil, fmt.Errorf("attachment data URL is malformed")
+	}
+	if !strings.Contains(strings.ToLower(header), ";base64") {
+		return "", nil, fmt.Errorf("attachment data URL must be base64 encoded")
+	}
+
+	contentType, _, _ := strings.Cut(strings.TrimPrefix(header, "data:"), ";")
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	payload = strings.TrimSpace(payload)
+	if base64.StdEncoding.DecodedLen(len(payload)) > config.DefaultMaxMediaSize {
+		return "", nil, fmt.Errorf("attachment exceeds %d byte limit", config.DefaultMaxMediaSize)
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid base64 attachment data")
+	}
+	if len(data) > config.DefaultMaxMediaSize {
+		return "", nil, fmt.Errorf("attachment exceeds %d byte limit", config.DefaultMaxMediaSize)
+	}
+
+	return contentType, data, nil
+}
+
+func (c *PicoChannel) storeInlineAttachment(value string, item map[string]any, scope string) (string, error) {
+	store := c.GetMediaStore()
+	if store == nil {
+		return "", fmt.Errorf("media store unavailable")
+	}
+
+	contentType, data, err := parseInlineAttachmentDataURL(value)
+	if err != nil {
+		return "", err
+	}
+	if hintedContentType := inlineAttachmentContentType(item); hintedContentType != "" {
+		contentType = hintedContentType
+	}
+
+	filename := inlineAttachmentFilename(item)
+	uploadDir := media.TempDir()
+	if c.workspaceDir != "" {
+		uploadDir = filepath.Join(c.workspaceDir, "tmp", "picoclaw-attachments")
+	}
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		return "", err
+	}
+	pattern := "pico-upload-*"
+	if ext := filepath.Ext(filename); ext != "" {
+		pattern += ext
+	}
+	f, err := os.CreateTemp(uploadDir, pattern)
+	if err != nil {
+		return "", err
+	}
+	localPath := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(localPath)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(localPath)
+		return "", err
+	}
+
+	ref, err := store.Store(localPath, media.MediaMeta{
+		Filename:    filename,
+		ContentType: contentType,
+		Source:      "pico",
+	}, scope)
+	if err != nil {
+		_ = os.Remove(localPath)
+		return "", err
+	}
+	return ref, nil
 }
 
 func validateInlineImageDataURL(mediaURL string) error {

@@ -23,6 +23,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+			ch.SetWorkspaceDir(cfg.WorkspacePath())
 			if channelName != config.ChannelPico {
 				ch.SetName(channelName)
 			}

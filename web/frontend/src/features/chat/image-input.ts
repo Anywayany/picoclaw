@@ -32,6 +32,8 @@ export const CHAT_IMAGE_ACCEPT = CHAT_IMAGE_MIME_TYPES.join(",")
 
 const MAX_CHAT_IMAGE_SIZE_BYTES = 7 * 1024 * 1024
 const MAX_CHAT_IMAGE_SIZE_LABEL = "7 MB"
+const MAX_CHAT_FILE_SIZE_BYTES = 20 * 1024 * 1024
+const MAX_CHAT_FILE_SIZE_LABEL = "20 MB"
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -86,6 +88,55 @@ function getAttachmentFilename(file: File, index: number): string {
   const mimeType = getSupportedImageMimeType(file)
   const extension = mimeType ? CHAT_IMAGE_EXTENSION_BY_MIME[mimeType] : ".png"
   return `image-${index + 1}${extension}`
+}
+
+function getGenericAttachmentFilename(file: File, index: number): string {
+  const trimmedName = file.name.trim()
+  if (trimmedName) {
+    return trimmedName
+  }
+  return `attachment-${index + 1}`
+}
+
+function inferAttachmentType(file: File): ChatAttachment["type"] {
+  const normalizedType = file.type.trim().toLowerCase()
+  if (normalizedType.startsWith("image/")) {
+    return "image"
+  }
+  if (normalizedType.startsWith("audio/")) {
+    return "audio"
+  }
+  if (normalizedType.startsWith("video/")) {
+    return "video"
+  }
+
+  const extension = getFileExtension(file.name)
+  switch (extension) {
+    case ".jpg":
+    case ".jpeg":
+    case ".png":
+    case ".gif":
+    case ".webp":
+    case ".bmp":
+      return "image"
+    case ".mp3":
+    case ".wav":
+    case ".ogg":
+    case ".m4a":
+    case ".flac":
+    case ".aac":
+    case ".wma":
+    case ".opus":
+      return "audio"
+    case ".mp4":
+    case ".avi":
+    case ".mov":
+    case ".webm":
+    case ".mkv":
+      return "video"
+    default:
+      return "file"
+  }
 }
 
 function getTransferItemFiles(dataTransfer: DataTransfer | null): File[] {
@@ -160,6 +211,45 @@ export async function buildChatImageAttachments(
     } catch {
       toast.error(
         t("chat.imageReadFailed", {
+          name: filename,
+        }),
+      )
+    }
+  }
+
+  return nextAttachments
+}
+
+export async function buildChatFileAttachments(
+  files: readonly File[],
+  t: TFunction,
+): Promise<ChatAttachment[]> {
+  const nextAttachments: ChatAttachment[] = []
+
+  for (const [index, file] of files.entries()) {
+    const filename = getGenericAttachmentFilename(file, index)
+
+    if (file.size > MAX_CHAT_FILE_SIZE_BYTES) {
+      toast.error(
+        t("chat.fileTooLarge", {
+          name: filename,
+          size: MAX_CHAT_FILE_SIZE_LABEL,
+        }),
+      )
+      continue
+    }
+
+    try {
+      const contentType = file.type.trim() || "application/octet-stream"
+      nextAttachments.push({
+        type: inferAttachmentType(file),
+        filename,
+        url: await readFileAsDataUrl(file),
+        contentType,
+      })
+    } catch {
+      toast.error(
+        t("chat.fileReadFailed", {
           name: filename,
         }),
       )

@@ -1,4 +1,4 @@
-import { IconCheck, IconCopy } from "@tabler/icons-react"
+import { IconCheck, IconCopy, IconFileText } from "@tabler/icons-react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,9 @@ export function UserMessage({
   const imageAttachments = attachments.filter(
     (attachment) => attachment.type === "image",
   )
+  const fileAttachments = attachments.filter(
+    (attachment) => attachment.type !== "image",
+  )
   const copyMessageLabel = isCopied
     ? t("chat.copiedLabel")
     : t("chat.copyMessage")
@@ -42,6 +45,30 @@ export function UserMessage({
               alt={attachment.filename || t("chat.uploadedImage")}
               className="max-h-72 max-w-full object-cover"
             />
+          ))}
+        </div>
+      )}
+
+      {fileAttachments.length > 0 && (
+        <div className="flex max-w-[70%] flex-wrap justify-end gap-2">
+          {fileAttachments.map((attachment, index) => (
+            <div
+              key={`${attachment.url}-${index}`}
+              className="border-border/60 bg-card text-card-foreground flex max-w-sm min-w-[200px] items-center gap-3 rounded-xl border px-3 py-2.5 shadow-sm"
+            >
+              <div className="bg-muted text-muted-foreground flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
+                <IconFileText className="size-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">
+                  {attachment.filename || t("chat.uploadedFile")}
+                </div>
+                <div className="text-muted-foreground mt-0.5 text-xs">
+                  {attachment.filename?.split(".").pop()?.toUpperCase() ||
+                    attachment.type.toUpperCase()}
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       )}

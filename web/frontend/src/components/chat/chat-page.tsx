@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/select"
 import {
   CHAT_IMAGE_ACCEPT,
+  buildChatFileAttachments,
   buildChatImageAttachments,
   getTransferredFiles,
   hasFileTransfer,
@@ -103,6 +104,7 @@ function resolveChatInputDisabledReason({
 export function ChatPage() {
   const { t } = useTranslation()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragDepthRef = useRef(0)
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -204,6 +206,11 @@ export function ChatPage() {
 
   const handleAddImages = () => {
     if (!canInput) return
+    imageInputRef.current?.click()
+  }
+
+  const handleAddFiles = () => {
+    if (!canInput) return
     fileInputRef.current?.click()
   }
 
@@ -235,6 +242,30 @@ export function ChatPage() {
     await appendImageFiles(files)
   }
 
+  const appendFiles = async (files: readonly File[]) => {
+    if (!canInput || files.length === 0) {
+      return
+    }
+
+    const nextAttachments = await buildChatFileAttachments(files, t)
+    if (nextAttachments.length === 0) {
+      return
+    }
+
+    setAttachments((prev) => [...prev, ...nextAttachments])
+  }
+
+  const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ""
+
+    if (files.length === 0) {
+      return
+    }
+
+    await appendFiles(files)
+  }
+
   const resetDragState = () => {
     dragDepthRef.current = 0
     setIsDragActive(false)
@@ -248,7 +279,7 @@ export function ChatPage() {
       return
     }
 
-    await appendImageFiles(files)
+    await appendFiles(files)
   }
 
   const handleComposerDragEnter = (event: DragEvent<HTMLDivElement>) => {
@@ -302,7 +333,7 @@ export function ChatPage() {
       return
     }
 
-    await appendImageFiles(files)
+    await appendFiles(files)
   }
 
   const canSubmit =
@@ -429,12 +460,19 @@ export function ChatPage() {
       </div>
 
       <input
-        ref={fileInputRef}
+        ref={imageInputRef}
         type="file"
         accept={CHAT_IMAGE_ACCEPT}
         multiple
         className="hidden"
         onChange={handleImageSelection}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFileSelection}
       />
 
       <ChatComposer
@@ -442,6 +480,7 @@ export function ChatPage() {
         attachments={attachments}
         onInputChange={setInput}
         onAddImages={handleAddImages}
+        onAddFiles={handleAddFiles}
         onPaste={handleComposerPaste}
         onDragEnter={handleComposerDragEnter}
         onDragLeave={handleComposerDragLeave}

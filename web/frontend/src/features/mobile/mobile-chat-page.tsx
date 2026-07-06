@@ -5,15 +5,18 @@ import { useTranslation } from "react-i18next"
 
 import { MobileSessionHistory } from "@/components/chat/mobile-session-history"
 import { Button } from "@/components/ui/button"
-import { buildChatImageAttachments } from "@/features/chat/image-input"
+import {
+  buildChatFileAttachments,
+  buildChatImageAttachments,
+} from "@/features/chat/image-input"
 import { MobileChatComposer } from "@/features/mobile/mobile-chat-composer"
 import { MobileMessageList } from "@/features/mobile/mobile-message-list"
-import { useChatModels } from "@/hooks/use-chat-models"
 import { useMobileGatewayPolling } from "@/features/mobile/use-mobile-gateway-polling"
+import { useChatModels } from "@/hooks/use-chat-models"
 import { usePicoChat } from "@/hooks/use-pico-chat"
 import { cn } from "@/lib/utils"
 import type { ChatAttachment, ConnectionState } from "@/store/chat"
-import { gatewayAtom, type GatewayState } from "@/store/gateway"
+import { type GatewayState, gatewayAtom } from "@/store/gateway"
 
 function getMobileDisabledKey({
   gatewayStatus,
@@ -69,12 +72,20 @@ function getConnectionLabelKey(connectionState: ConnectionState) {
 
 export function MobileChatPage() {
   const { t } = useTranslation()
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [input, setInput] = useState("")
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const { status: gatewayStatus } = useAtomValue(gatewayAtom)
-  const { messages, connectionState, isTyping, sendMessage, newChat, activeSessionId, switchSession } =
-    usePicoChat()
+  const {
+    messages,
+    connectionState,
+    isTyping,
+    sendMessage,
+    newChat,
+    activeSessionId,
+    switchSession,
+  } = usePicoChat()
 
   useMobileGatewayPolling()
 
@@ -110,12 +121,17 @@ export function MobileChatPage() {
     if (disabled) {
       return
     }
+    imageInputRef.current?.click()
+  }
+
+  const handleAddFiles = () => {
+    if (disabled) {
+      return
+    }
     fileInputRef.current?.click()
   }
 
-  const handleImageSelection = async (
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
+  const handleImageSelection = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ""
     if (disabled || files.length === 0) {
@@ -123,6 +139,19 @@ export function MobileChatPage() {
     }
 
     const nextAttachments = await buildChatImageAttachments(files, t)
+    if (nextAttachments.length > 0) {
+      setAttachments((prev) => [...prev, ...nextAttachments])
+    }
+  }
+
+  const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ""
+    if (disabled || files.length === 0) {
+      return
+    }
+
+    const nextAttachments = await buildChatFileAttachments(files, t)
     if (nextAttachments.length > 0) {
       setAttachments((prev) => [...prev, ...nextAttachments])
     }
@@ -190,6 +219,7 @@ export function MobileChatPage() {
       <MobileChatComposer
         input={input}
         attachments={attachments}
+        imageInputRef={imageInputRef}
         fileInputRef={fileInputRef}
         placeholder={placeholder}
         disabled={disabled}
@@ -201,8 +231,10 @@ export function MobileChatPage() {
         hasAvailableModels={hasAvailableModels}
         onSetDefaultModel={handleSetDefault}
         onInputChange={setInput}
-        onFileChange={handleImageSelection}
+        onImageChange={handleImageSelection}
+        onFileChange={handleFileSelection}
         onAddImages={handleAddImages}
+        onAddFiles={handleAddFiles}
         onRemoveAttachment={(index) =>
           setAttachments((prev) =>
             prev.filter((_, itemIndex) => itemIndex !== index),
