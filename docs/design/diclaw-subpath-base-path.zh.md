@@ -102,20 +102,244 @@ web/backend/publicpath/publicpath.go
 web/backend/publicpath/publicpath_test.go
 ```
 
-主要能力：
+核心代码：
 
-- `Normalize(raw string)`：把 `diclaw`、`/diclaw/` 规范化为 `/diclaw`，空值或 `/` 规范化为空字符串。
-- `WithBase(base, appPath string)`：把应用内部路径拼成外部路径，例如 `/mobile` -> `/diclaw/mobile`。
-- `StripBase(base, externalPath string)`：把外部路径剥离前缀，例如 `/diclaw/mobile` -> `/mobile`。
-- `StripPrefixMiddleware(base, next)`：请求进入原有 mux 前剥离前缀。
-- `ExternalRequestURI(r)`：保留剥离前的原始 URI，用于登录 redirect。
-- `CookiePath(base)`：生成 Cookie Path，空前缀为 `/`，`/diclaw` 前缀为 `/diclaw`。
+```go
+package publicpath
 
-测试覆盖：
+import (
+    "context"
+    "net/http"
+    "net/url"
+    "path"
+    "strings"
+)
 
-- 空前缀和 `/diclaw` 前缀的规范化。
-- 路径拼接和路径剥离。
-- 中间件是否把 `/diclaw/mobile?x=1` 改写成 `/mobile?x=1`，同时保留原始 URI。
+const EnvPublicBasePath = "PICOCLAW_PUBLIC_BASE_PATH"
+
+type originalRequestURIKey struct{}
+
+// Normalize converts a configured public base path to "" or "/name".
+func Normalize(raw string) string {
+    raw = strings.TrimSpace(raw)
+    if raw == "" || raw == "/" {
+        return ""
+    }
+    if !strings.HasPrefix(raw, "/") {
+        raw = "/" + raw
+    }
+    cleaned := path.Clean(raw)
+    if cleaned == "/" || cleaned == "." {
+        return ""
+    }
+    return strings.TrimRight(cleaned, "/")
+}
+```
+
+这段代码定义了统一的环境变量名 `PICOCLAW_PUBLIC_BASE_PATH`，并把用户输入规范化：
+
+```text
+""          -> ""
+"/"         -> ""
+"diclaw"    -> "/diclaw"
+"/diclaw/"  -> "/diclaw"
+```
+
+路径拼接代码：
+
+```go
+// WithBase prefixes absolute application paths with base.
+func WithBase(base, appPath string) string {
+    base = Normalize(base)
+    if appPath == "" {
+        appPath = "/"
+    }
+    if !strings.HasPrefix(appPath, "/") {
+        appPath = "/" + appPath
+    }
+    if base == "" {
+        return appPath
+    }
+    if appPath == "/" {
+        return base + "/"
+    }
+    if appPath == base || strings.HasPrefix(appPath, base+"/") {
+        return appPath
+    }
+    return base + appPath
+}
+```
+
+作用是把应用内部路径转换成浏览器可见路径：
+
+```text
+WithBase("", "/mobile")        -> "/mobile"
+WithBase("/diclaw", "/mobile") -> "/diclaw/mobile"
+WithBase("/diclaw", "/")       -> "/diclaw/"
+```
+
+前缀剥离代码：
+
+```go
+// StripBase removes base from an externally visible path.
+func StripBase(base, externalPath string) (string, bool) {
+    base = Normalize(base)
+    if base == "" {
+        if externalPath == "" {
+            return "/", true
+        }
+        return externalPath, true
+    }
+    if externalPath == base {
+        return "/", true
+    }
+    if strings.HasPrefix(externalPath, base+"/") {
+        stripped := strings.TrimPrefix(externalPath, base)
+        if stripped == "" {
+            return "/", true
+        }
+        return stripped, true
+    }
+    return externalPath, false
+}
+```
+
+作用是把外部请求路径还原成原有业务路由：
+
+```text
+StripBase("/diclaw", "/diclaw/mobile")          -> "/mobile", true
+StripBase("/diclaw", "/diclaw/api/auth/status") -> "/api/auth/status", true
+StripBase("/diclaw", "/api/auth/status")        -> "/api/auth/status", false
+```
+
+HTTP 中间件代码：
+
+```go
+// StripPrefixMiddleware rewrites requests under base to root-relative paths
+// before they reach the existing mux. Requests outside base are left unchanged
+// so local root-path development remains available.
+func StripPrefixMiddleware(base string, next http.Handler) http.Handler {
+    base = Normalize(base)
+    if base == "" {
+        return next
+    }
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        originalURI := "/"
+        if r.URL != nil {
+            originalURI = r.URL.RequestURI()
+        }
+        ctx := context.WithValue(r.Context(), originalRequestURIKey{}, originalURI)
+        r = r.WithContext(ctx)
+
+        if r.URL == nil {
+            next.ServeHTTP(w, r)
+            return
+        }
+        stripped, ok := StripBase(base, r.URL.Path)
+        if !ok {
+            next.ServeHTTP(w, r)
+            return
+        }
+
+        clone := r.Clone(ctx)
+        u := *r.URL
+        u.Path = stripped
+        u.RawPath = ""
+        clone.URL = &u
+        next.ServeHTTP(w, clone)
+    })
+}
+```
+
+这段是后端适配的关键。Nginx 保留 `/diclaw` 转发时，Launcher 实际收到：
+
+```text
+GET /diclaw/api/auth/status
+```
+
+中间件进入原有 `http.ServeMux` 之前改写成：
+
+```text
+GET /api/auth/status
+```
+
+因此原来的路由注册逻辑不用整体改成 `/diclaw/api/...`。
+
+保留原始 URI 的代码：
+
+```go
+// ExternalRequestURI returns the request URI before StripPrefixMiddleware
+// rewrote it, falling back to the current URI.
+func ExternalRequestURI(r *http.Request) string {
+    if r == nil {
+        return "/"
+    }
+    if v, ok := r.Context().Value(originalRequestURIKey{}).(string); ok && v != "" {
+        return v
+    }
+    if r.URL == nil {
+        return "/"
+    }
+    return r.URL.RequestURI()
+}
+
+// EnsureExternalRequestURI returns a public request URI that includes base.
+func EnsureExternalRequestURI(base string, r *http.Request) string {
+    uri := ExternalRequestURI(r)
+    if uri == "" {
+        uri = "/"
+    }
+    if base == "" {
+        return uri
+    }
+    pathPart := uri
+    query := ""
+    if i := strings.IndexByte(uri, '?'); i >= 0 {
+        pathPart = uri[:i]
+        query = uri[i:]
+    }
+    if _, ok := StripBase(base, pathPart); ok && Normalize(base) != "" && strings.HasPrefix(pathPart, Normalize(base)) {
+        return uri
+    }
+    return WithBase(base, pathPart) + query
+}
+```
+
+作用是登录跳转时不要把用户从 `/diclaw/mobile` 错误带回 `/mobile`。
+
+Cookie Path 和 URL 路径处理代码：
+
+```go
+// CookiePath returns a path suitable for launcher auth cookies.
+func CookiePath(base string) string {
+    base = Normalize(base)
+    if base == "" {
+        return "/"
+    }
+    return base
+}
+
+// AddBaseToURLPath prefixes same-origin absolute URL strings.
+func AddBaseToURLPath(base, rawURL string) string {
+    base = Normalize(base)
+    if base == "" || rawURL == "" {
+        return rawURL
+    }
+    u, err := url.Parse(rawURL)
+    if err != nil || u.IsAbs() || !strings.HasPrefix(rawURL, "/") || strings.HasPrefix(rawURL, "//") {
+        return rawURL
+    }
+    u.Path = WithBase(base, u.Path)
+    return u.String()
+}
+```
+
+测试文件覆盖了：
+
+- `Normalize`：空值、`/`、`diclaw`、`/diclaw/`。
+- `WithBase`：根路径、普通路径、已经带前缀的路径。
+- `StripBase`：`/diclaw/mobile?x=1` 进入 mux 前变成 `/mobile?x=1`。
+- `ExternalRequestURI`：中间件改写后仍能拿到原始 `/diclaw/mobile?x=1`。
 
 ### 2. 后端启动流程接入 `PICOCLAW_PUBLIC_BASE_PATH`
 
@@ -126,29 +350,107 @@ web/backend/main.go
 web/backend/main_test.go
 ```
 
-主要改动：
+新增 import：
+
+```go
+import (
+    ...
+    "github.com/sipeed/picoclaw/web/backend/publicpath"
+    ...
+)
+```
+
+启动时读取环境变量：
 
 ```go
 publicBasePath := publicpath.Normalize(os.Getenv(publicpath.EnvPublicBasePath))
 ```
 
-然后把 `publicBasePath` 传给：
-
-- launcher auth routes
-- API handler
-- dashboard auth middleware
-- 浏览器自动打开 URL 生成逻辑
-
-middleware stack 中加入前缀剥离：
+把 `publicBasePath` 注入登录接口：
 
 ```go
-publicpath.StripPrefixMiddleware(publicBasePath, middleware.JSONContentType(dashAuth))
+api.RegisterLauncherAuthRoutes(mux, api.LauncherAuthRouteOpts{
+    SessionCookie:  dashboardSessionCookie,
+    PublicBasePath: publicBasePath,
+    PasswordStore:  passwordStore,
+    StoreError:     authStoreErr,
+})
 ```
 
-测试覆盖：
+把 `publicBasePath` 注入 API handler，用于生成 WebSocket、events、send 的浏览器可见 URL：
 
-- 默认空前缀时，启动浏览器路径仍为 `/launcher-setup`、`/launcher-auto-login`、`/`。
-- `/diclaw` 前缀时，启动浏览器路径为 `/diclaw/launcher-setup`、`/diclaw/launcher-auto-login`、`/diclaw/`。
+```go
+apiHandler := api.NewHandler(launcherCfg.ConfigPath)
+...
+apiHandler.SetPublicBasePath(publicBasePath)
+apiHandler.RegisterRoutes(mux)
+```
+
+把 `publicBasePath` 注入 dashboard auth middleware：
+
+```go
+dashAuth := middleware.LauncherDashboardAuth(middleware.LauncherDashboardAuthConfig{
+    ExpectedCookie: dashboardSessionCookie,
+    LocalAutoLogin: localAutoLogin,
+    PublicBasePath: publicBasePath,
+}, accessControlledMux)
+```
+
+在 middleware stack 中接入前缀剥离：
+
+```go
+basePathHandler := publicpath.StripPrefixMiddleware(
+    publicBasePath,
+    middleware.JSONContentType(dashAuth),
+)
+
+handler := middleware.Recoverer(
+    middleware.Logger(
+        middleware.ReferrerPolicyNoReferrer(
+            basePathHandler,
+        ),
+    ),
+)
+```
+
+浏览器自动打开地址也要带前缀：
+
+```go
+func launcherBrowserLaunchSuffix(
+    needsSetup bool,
+    localAutoLogin *middleware.LauncherDashboardLocalAutoLogin,
+    publicBasePath string,
+) string {
+    if needsSetup {
+        return publicpath.WithBase(publicBasePath, middleware.LauncherDashboardSetupPath)
+    }
+    if localAutoLogin != nil {
+        return publicpath.AddBaseToURLPath(publicBasePath, localAutoLogin.URLPath())
+    }
+    return publicpath.WithBase(publicBasePath, "/")
+}
+```
+
+调用处：
+
+```go
+browserLaunchURL = serverAddr + launcherBrowserLaunchSuffix(
+    needsInitialSetup,
+    localAutoLogin,
+    publicBasePath,
+)
+```
+
+测试补充：
+
+```go
+if got := launcherBrowserLaunchSuffix(true, autoLogin, "/diclaw"); got != "/diclaw/launcher-setup" {
+    t.Fatalf("prefixed setup suffix = %q", got)
+}
+if got := launcherBrowserLaunchSuffix(false, nil, "/diclaw"); got != "/diclaw/" {
+    t.Fatalf("prefixed root suffix = %q", got)
+}
+```
 
 ### 3. API handler 保存 public base path
 
@@ -158,17 +460,36 @@ publicpath.StripPrefixMiddleware(publicBasePath, middleware.JSONContentType(dash
 web/backend/api/router.go
 ```
 
-新增字段和 setter：
+`Handler` 结构体新增字段：
 
 ```go
-publicBasePath string
-
-func (h *Handler) SetPublicBasePath(basePath string)
+type Handler struct {
+    configPath                 string
+    cfgMu                      sync.RWMutex
+    cfg                        *config.Config
+    serverBindHostInput        string
+    serverBindHostExplicit     bool
+    serverCIDRs                []string
+    serverAllowLocalhostBypass bool
+    serverTrustedProxyCIDRs    []string
+    publicBasePath             string
+    debug                      bool
+    oauthMu                    sync.Mutex
+    oauthFlows                 map[string]*oauthFlow
+}
 ```
 
-用途：API handler 在生成浏览器可见 URL 时知道当前外部路径前缀。
+新增 setter：
 
-### 4. Pico WebSocket URL 带前缀
+```go
+func (h *Handler) SetPublicBasePath(basePath string) {
+    h.publicBasePath = basePath
+}
+```
+
+这个字段目前主要被 `gateway_host.go` 使用，用来生成外部 WebSocket 和 Pico API 地址。
+
+### 4. Pico WebSocket、events、send URL 带前缀
 
 修改文件：
 
@@ -177,32 +498,69 @@ web/backend/api/gateway_host.go
 web/backend/api/gateway_host_test.go
 ```
 
+新增 import：
+
+```go
+import (
+    ...
+    "github.com/sipeed/picoclaw/web/backend/publicpath"
+)
+```
+
 修改前：
 
-```text
-wss://ids.byd.com:443/pico/ws
+```go
+func (h *Handler) buildWsURL(r *http.Request) string {
+    return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/ws"
+}
+
+func (h *Handler) buildPicoEventsURL(r *http.Request) string {
+    return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/events"
+}
+
+func (h *Handler) buildPicoSendURL(r *http.Request) string {
+    return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/send"
+}
 ```
 
-修改后，在 `PICOCLAW_PUBLIC_BASE_PATH=/diclaw` 时返回：
+修改后：
 
-```text
-wss://ids.byd.com:443/diclaw/pico/ws
-```
+```go
+func (h *Handler) buildWsURL(r *http.Request) string {
+    return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) +
+        publicpath.WithBase(h.publicBasePath, "/pico/ws")
+}
 
-同样适配：
+func (h *Handler) buildPicoEventsURL(r *http.Request) string {
+    return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) +
+        publicpath.WithBase(h.publicBasePath, "/pico/events")
+}
 
-```text
-/pico/events
-/pico/send
+func (h *Handler) buildPicoSendURL(r *http.Request) string {
+    return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) +
+        publicpath.WithBase(h.publicBasePath, "/pico/send")
+}
 ```
 
 测试新增：
 
-```text
-TestBuildWsURLIncludesPublicBasePath
+```go
+func TestBuildWsURLIncludesPublicBasePath(t *testing.T) {
+    configPath := filepath.Join(t.TempDir(), "config.json")
+    h := NewHandler(configPath)
+    h.SetPublicBasePath("/diclaw")
+
+    req := httptest.NewRequest("GET", "http://launcher.local/diclaw/api/pico/info", nil)
+    req.Host = "ids.byd.com"
+    req.Header.Set("X-Forwarded-Proto", "https")
+
+    if got := h.buildWsURL(req); got != "wss://ids.byd.com:443/diclaw/pico/ws" {
+        t.Fatalf("buildWsURL() = %q, want %q", got, "wss://ids.byd.com:443/diclaw/pico/ws")
+    }
+}
 ```
 
-### 5. Dashboard 登录 Cookie 支持前缀 Path
+### 5. Dashboard 登录接口 Cookie 支持前缀 Path
 
 修改文件：
 
@@ -212,30 +570,150 @@ web/backend/middleware/launcher_dashboard_auth.go
 web/backend/middleware/launcher_dashboard_auth_test.go
 ```
 
-修改前，登录 Cookie 固定：
-
-```text
-Path=/
-```
-
-修改后：
-
-- 默认空前缀仍然是 `Path=/`。
-- `/diclaw` 前缀部署时是 `Path=/diclaw`。
-
-这样可以避免 Cookie 泄到同域名其它系统路径。
-
-新增方法：
+`LauncherAuthRouteOpts` 新增 `PublicBasePath`：
 
 ```go
-SetLauncherDashboardSessionCookieWithPath(...)
-ClearLauncherDashboardSessionCookieWithPath(...)
+type LauncherAuthRouteOpts struct {
+    SessionCookie  string
+    SecureCookie   func(*http.Request) bool
+    PublicBasePath string
+    PasswordStore  PasswordStore
+    StoreError     error
+}
+```
+
+注册 auth handlers 时计算 Cookie Path：
+
+```go
+h := &launcherAuthHandlers{
+    sessionCookie: opts.SessionCookie,
+    secureCookie:  secure,
+    cookiePath:    publicpath.CookiePath(opts.PublicBasePath),
+    store:         opts.PasswordStore,
+    storeErr:      opts.StoreError,
+    loginLimit:    newLoginRateLimiter(),
+}
+```
+
+`launcherAuthHandlers` 新增字段：
+
+```go
+type launcherAuthHandlers struct {
+    sessionCookie string
+    secureCookie  func(*http.Request) bool
+    cookiePath    string
+    store         PasswordStore
+    storeErr      error
+    loginLimit    *loginRateLimiter
+}
+```
+
+登录成功写 Cookie 时使用带 Path 的方法：
+
+```go
+middleware.SetLauncherDashboardSessionCookieWithPath(
+    w,
+    r,
+    h.sessionCookie,
+    h.secureCookie,
+    h.cookiePath,
+)
+```
+
+退出登录清 Cookie 时同样使用带 Path 的方法：
+
+```go
+middleware.ClearLauncherDashboardSessionCookieWithPath(
+    w,
+    r,
+    h.secureCookie,
+    h.cookiePath,
+)
+```
+
+middleware 中新增带 Path 的 Cookie 方法：
+
+```go
+func SetLauncherDashboardSessionCookieWithPath(
+    w http.ResponseWriter,
+    r *http.Request,
+    sessionValue string,
+    secure func(*http.Request) bool,
+    cookiePath string,
+) {
+    if secure == nil {
+        secure = DefaultLauncherDashboardSecureCookie
+    }
+    if strings.TrimSpace(cookiePath) == "" {
+        cookiePath = "/"
+    }
+    http.SetCookie(w, &http.Cookie{
+        Name:     LauncherDashboardCookieName,
+        Value:    sessionValue,
+        Path:     cookiePath,
+        MaxAge:   launcherDashboardSessionMaxAgeSec,
+        HttpOnly: true,
+        SameSite: http.SameSiteLaxMode,
+        Secure:   secure(r),
+    })
+}
+```
+
+保留原有方法，避免影响其它调用：
+
+```go
+func SetLauncherDashboardSessionCookie(
+    w http.ResponseWriter,
+    r *http.Request,
+    sessionValue string,
+    secure func(*http.Request) bool,
+) {
+    SetLauncherDashboardSessionCookieWithPath(w, r, sessionValue, secure, "/")
+}
+```
+
+清理 Cookie 的带 Path 方法：
+
+```go
+func ClearLauncherDashboardSessionCookieWithPath(
+    w http.ResponseWriter,
+    r *http.Request,
+    secure func(*http.Request) bool,
+    cookiePath string,
+) {
+    if secure == nil {
+        secure = DefaultLauncherDashboardSecureCookie
+    }
+    if strings.TrimSpace(cookiePath) == "" {
+        cookiePath = "/"
+    }
+    http.SetCookie(w, &http.Cookie{
+        Name:     LauncherDashboardCookieName,
+        Value:    "",
+        Path:     cookiePath,
+        MaxAge:   -1,
+        HttpOnly: true,
+        SameSite: http.SameSiteLaxMode,
+        Secure:   secure(r),
+    })
+}
 ```
 
 测试新增：
 
-```text
-TestLauncherDashboardAuth_PrefixedSessionCookiePath
+```go
+func TestLauncherDashboardAuth_PrefixedSessionCookiePath(t *testing.T) {
+    rec := httptest.NewRecorder()
+    req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+    SetLauncherDashboardSessionCookieWithPath(rec, req, "cookie-value", nil, "/diclaw")
+    cookies := rec.Result().Cookies()
+    if len(cookies) != 1 {
+        t.Fatalf("cookies = %#v", cookies)
+    }
+    if got := cookies[0].Path; got != "/diclaw" {
+        t.Fatalf("cookie path = %q, want /diclaw", got)
+    }
+}
 ```
 
 ### 6. Dashboard 未登录跳转支持前缀
@@ -247,24 +725,120 @@ web/backend/middleware/launcher_dashboard_auth.go
 web/backend/middleware/launcher_dashboard_auth_test.go
 ```
 
-修改前：
+`LauncherDashboardAuthConfig` 新增 `PublicBasePath`：
 
-```text
-/mobile
-  -> /launcher-login?redirect=%2Fmobile
+```go
+type LauncherDashboardAuthConfig struct {
+    ExpectedCookie string
+    LocalAutoLogin *LauncherDashboardLocalAutoLogin
+    SecureCookie   func(*http.Request) bool
+    // PublicBasePath is the externally visible path prefix, e.g. /diclaw.
+    PublicBasePath string
+}
 ```
 
-修改后，在 `/diclaw` 前缀部署时：
+拒绝未登录访问时，把 base path 传入 redirect 生成逻辑：
+
+```go
+func LauncherDashboardAuth(cfg LauncherDashboardAuthConfig, next http.Handler) http.Handler {
+    ...
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        p := canonicalLauncherDashboardPath(r.URL.Path)
+        ...
+        rejectLauncherDashboardAuth(w, r, p, cfg.PublicBasePath)
+    })
+}
+```
+
+移动端未登录跳转代码：
+
+```go
+func rejectLauncherDashboardAuth(
+    w http.ResponseWriter,
+    r *http.Request,
+    canonicalPath string,
+    basePath string,
+) {
+    if canonicalPath == "/pico/ws" {
+        http.Error(w, "unauthorized", http.StatusUnauthorized)
+        return
+    }
+    if isLauncherJSONPath(canonicalPath) {
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusUnauthorized)
+        _, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+        return
+    }
+    http.Redirect(w, r, launcherDashboardLoginRedirectPath(r, canonicalPath, basePath), http.StatusFound)
+}
+
+func launcherDashboardLoginRedirectPath(r *http.Request, canonicalPath, basePath string) string {
+    basePath = publicpath.Normalize(basePath)
+    loginPath := publicpath.WithBase(basePath, "/launcher-login")
+    if !isMobileDashboardPath(canonicalPath) {
+        return loginPath
+    }
+    return loginPath + "?redirect=" + url.QueryEscape(publicpath.EnsureExternalRequestURI(basePath, r))
+}
+```
+
+路径变化：
 
 ```text
-/diclaw/mobile
-  -> /diclaw/launcher-login?redirect=%2Fdiclaw%2Fmobile
+空前缀：
+/mobile -> /launcher-login?redirect=%2Fmobile
+
+/diclaw 前缀：
+/diclaw/mobile -> /diclaw/launcher-login?redirect=%2Fdiclaw%2Fmobile
+```
+
+本地自动登录也需要带前缀：
+
+```go
+func handleLauncherLocalAutoLogin(w http.ResponseWriter, r *http.Request, cfg LauncherDashboardAuthConfig) {
+    basePath := publicpath.Normalize(cfg.PublicBasePath)
+    if validLauncherDashboardAuth(r, cfg) {
+        http.Redirect(w, r, publicpath.WithBase(basePath, "/"), http.StatusSeeOther)
+        return
+    }
+    ...
+    if cfg.LocalAutoLogin != nil && cfg.LocalAutoLogin.consume(r.URL.Query().Get("nonce")) {
+        SetLauncherDashboardSessionCookieWithPath(
+            w,
+            r,
+            cfg.ExpectedCookie,
+            cfg.SecureCookie,
+            publicpath.CookiePath(basePath),
+        )
+        http.Redirect(w, r, publicpath.WithBase(basePath, "/"), http.StatusSeeOther)
+        return
+    }
+    rejectLauncherDashboardAuth(w, r, LauncherDashboardLocalAutoLoginPath, cfg.PublicBasePath)
+}
 ```
 
 测试新增：
 
-```text
-TestLauncherDashboardAuth_PrefixedMobileRedirectPreservesExternalTarget
+```go
+func TestLauncherDashboardAuth_PrefixedMobileRedirectPreservesExternalTarget(t *testing.T) {
+    cfg := LauncherDashboardAuthConfig{
+        ExpectedCookie: "deadbeef",
+        PublicBasePath: "/diclaw",
+    }
+    next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        t.Fatal("next handler should not run without session cookie")
+    })
+    h := publicpath.StripPrefixMiddleware("/diclaw", LauncherDashboardAuth(cfg, next))
+
+    rec := httptest.NewRecorder()
+    req := httptest.NewRequest(http.MethodGet, "/diclaw/mobile?foo=bar", nil)
+    h.ServeHTTP(rec, req)
+
+    want := "/diclaw/launcher-login?redirect=%2Fdiclaw%2Fmobile%3Ffoo%3Dbar"
+    if got := rec.Header().Get("Location"); got != want {
+        t.Fatalf("Location = %q, want %q", got, want)
+    }
+}
 ```
 
 ### 7. 前端新增 public base path 工具
@@ -275,12 +849,102 @@ TestLauncherDashboardAuth_PrefixedMobileRedirectPreservesExternalTarget
 web/frontend/src/lib/public-base-path.ts
 ```
 
-主要能力：
+完整核心代码：
 
-- `PUBLIC_BASE_PATH`：读取 `import.meta.env.VITE_PUBLIC_BASE_PATH`。
-- `withBasePath(path)`：把 `/api/auth/status` 转成 `/diclaw/api/auth/status`。
-- `stripBasePath(pathname)`：把 `/diclaw/mobile` 转成 `/mobile`，用于页面判断。
-- `withBasePathInput(input)`：给 `fetch` 的同源绝对路径自动补前缀。
+```ts
+function normalizeBasePath(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim()
+  if (trimmed === "" || trimmed === "/") {
+    return ""
+  }
+  const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  return withSlash.replace(/\/+$/, "")
+}
+
+export const PUBLIC_BASE_PATH = normalizeBasePath(
+  import.meta.env.VITE_PUBLIC_BASE_PATH,
+)
+```
+
+这段读取构建期变量：
+
+```bash
+VITE_PUBLIC_BASE_PATH=/diclaw
+```
+
+路径拼接函数：
+
+```ts
+export function withBasePath(path: string): string {
+  if (PUBLIC_BASE_PATH === "") {
+    return path
+  }
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return path
+  }
+  if (path === PUBLIC_BASE_PATH || path.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return path
+  }
+  if (path === "/") {
+    return `${PUBLIC_BASE_PATH}/`
+  }
+  return `${PUBLIC_BASE_PATH}${path}`
+}
+```
+
+示例：
+
+```text
+withBasePath("/api/auth/status") -> "/diclaw/api/auth/status"
+withBasePath("/mobile")          -> "/diclaw/mobile"
+withBasePath("/")                -> "/diclaw/"
+```
+
+路径剥离函数：
+
+```ts
+export function stripBasePath(pathname: string): string {
+  if (PUBLIC_BASE_PATH === "") {
+    return pathname || "/"
+  }
+  if (pathname === PUBLIC_BASE_PATH) {
+    return "/"
+  }
+  if (pathname.startsWith(`${PUBLIC_BASE_PATH}/`)) {
+    return pathname.slice(PUBLIC_BASE_PATH.length) || "/"
+  }
+  return pathname || "/"
+}
+```
+
+用途是判断页面类型时继续按内部路径判断：
+
+```text
+stripBasePath("/diclaw/mobile")         -> "/mobile"
+stripBasePath("/diclaw/launcher-login") -> "/launcher-login"
+```
+
+fetch 输入自动补前缀：
+
+```ts
+export function withBasePathInput(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input === "string") {
+    return withBasePath(input)
+  }
+  if (input instanceof URL) {
+    if (
+      typeof globalThis.location !== "undefined" &&
+      input.origin === globalThis.location.origin
+    ) {
+      const copy = new URL(input.href)
+      copy.pathname = withBasePath(copy.pathname)
+      return copy
+    }
+    return input
+  }
+  return input
+}
+```
 
 ### 8. Vite 构建和开发代理支持前缀
 
@@ -290,27 +954,80 @@ web/frontend/src/lib/public-base-path.ts
 web/frontend/vite.config.ts
 ```
 
-新增：
+新增 base path 规范化：
 
 ```ts
-base: publicBasePath === "" ? "/" : `${publicBasePath}/`
+function normalizeBasePath(raw: string | undefined): string {
+  const trimmed = (raw ?? "").trim()
+  if (trimmed === "" || trimmed === "/") {
+    return ""
+  }
+  const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  return withSlash.replace(/\/+$/, "")
+}
+
+const publicBasePath = normalizeBasePath(process.env.VITE_PUBLIC_BASE_PATH)
+const proxyPath = (path: string) =>
+  publicBasePath === "" ? path : `${publicBasePath}${path}`
+const stripProxyBase = (path: string) =>
+  publicBasePath === "" ? path : path.slice(publicBasePath.length) || "/"
 ```
 
-构建后的 HTML 会引用：
+构建 base 配置：
 
-```text
-/diclaw/assets/index-xxx.js
-/diclaw/assets/index-xxx.css
-/diclaw/favicon.ico
-/diclaw/site.webmanifest
+```ts
+export default defineConfig({
+  base: publicBasePath === "" ? "/" : `${publicBasePath}/`,
+  ...
+})
 ```
 
-开发代理也会根据前缀工作：
+效果：
 
 ```text
-/diclaw/api         -> http://localhost:18800/api
-/diclaw/pico/ws    -> ws://localhost:18800/pico/ws
-/diclaw/pico/media -> http://localhost:18800/pico/media
+默认构建：
+<script src="/assets/index-xxx.js">
+
+VITE_PUBLIC_BASE_PATH=/diclaw 构建：
+<script src="/diclaw/assets/index-xxx.js">
+```
+
+开发代理配置：
+
+```ts
+server: {
+  proxy: {
+    [proxyPath("/api")]: {
+      target: "http://localhost:18800",
+      changeOrigin: true,
+      rewrite: stripProxyBase,
+    },
+    [proxyPath("/pico/media")]: {
+      target: "http://localhost:18800",
+      changeOrigin: true,
+      rewrite: stripProxyBase,
+    },
+    [proxyPath("/pico/ws")]: {
+      target: "ws://localhost:18800",
+      ws: true,
+      rewrite: stripProxyBase,
+    },
+  },
+}
+```
+
+带 `/diclaw` 时，Vite dev server 收到：
+
+```text
+/diclaw/api/auth/status
+/diclaw/pico/ws
+```
+
+会代理给后端：
+
+```text
+/api/auth/status
+/pico/ws
 ```
 
 ### 9. TanStack Router 支持 basepath
@@ -321,25 +1038,39 @@ base: publicBasePath === "" ? "/" : `${publicBasePath}/`
 web/frontend/src/main.tsx
 ```
 
-新增：
+新增 import：
 
 ```ts
-basepath: PUBLIC_BASE_PATH || "/"
+import { PUBLIC_BASE_PATH } from "./lib/public-base-path"
 ```
 
-前端内部路由仍然写：
+router 初始化新增 `basepath`：
+
+```ts
+const router = createRouter({
+  routeTree,
+  basepath: PUBLIC_BASE_PATH || "/",
+  context: {
+    queryClient,
+  },
+})
+```
+
+这样源码里的路由仍然可以保持：
 
 ```text
 /mobile
 /launcher-login
+/launcher-setup
 /config
 ```
 
-浏览器地址会映射到：
+浏览器访问时由 router 映射到：
 
 ```text
 /diclaw/mobile
 /diclaw/launcher-login
+/diclaw/launcher-setup
 /diclaw/config
 ```
 
@@ -353,17 +1084,82 @@ web/frontend/src/api/launcher-auth.ts
 web/frontend/src/components/config/config-sections.tsx
 ```
 
-主要改动：
+`launcherFetch()` 修改前：
 
-- `launcherFetch()` 使用 `withBasePathInput()`。
-- 登录、退出、setup、auth status 显式使用 `withBasePath()`。
-- 配置页面里的命令模式测试接口也改为带前缀。
+```ts
+const res = await fetch(input, {
+  credentials: "same-origin",
+  ...init,
+})
+```
 
-示例：
+修改后：
 
-```text
-/api/auth/status
-  -> /diclaw/api/auth/status
+```ts
+const res = await fetch(withBasePathInput(input), {
+  credentials: "same-origin",
+  ...init,
+})
+```
+
+未登录重定向也要带前缀：
+
+```ts
+globalThis.location.assign(
+  isMobilePathname(pathname)
+    ? buildLauncherAuthPath(
+        "/launcher-login",
+        getCurrentMobileRedirectTarget(),
+      )
+    : withBasePath("/launcher-login"),
+)
+```
+
+登录 API 修改前：
+
+```ts
+const res = await fetch("/api/auth/login", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  credentials: "same-origin",
+  body: JSON.stringify({ password }),
+})
+```
+
+修改后：
+
+```ts
+const res = await fetch(withBasePath("/api/auth/login"), {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  credentials: "same-origin",
+  body: JSON.stringify({ password }),
+})
+```
+
+同样修改的接口：
+
+```ts
+fetch(withBasePath("/api/auth/status"), ...)
+fetch(withBasePath("/api/auth/logout"), ...)
+fetch(withBasePath("/api/auth/setup"), ...)
+```
+
+配置页直接 fetch 的接口也补前缀：
+
+```ts
+const res = await fetch(
+  withBasePath("/api/config/test-command-patterns"),
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      allow_patterns: allowPatterns,
+      deny_patterns: denyPatterns,
+      command: testCommand,
+    }),
+  },
+)
 ```
 
 ### 11. 前端登录跳转、移动端 redirect 和 auth path 判断支持前缀
@@ -377,12 +1173,135 @@ web/frontend/src/routes/__root.tsx
 web/frontend/src/components/app-header.tsx
 ```
 
-主要改动：
+移动端 redirect 工具新增 import：
 
-- 判断当前页面是否是移动端页面时，先剥离 `/diclaw`。
-- 未登录跳转时使用 `/diclaw/launcher-login`。
-- 移动端 redirect 保留 `/diclaw/mobile`。
-- 退出登录后跳转到 `/diclaw/launcher-login`。
+```ts
+import { stripBasePath, withBasePath } from "@/lib/public-base-path"
+```
+
+安全 redirect target 返回带前缀的同源路径：
+
+```ts
+export function getSafeRedirectTarget(
+  value: string | null | undefined,
+  fallback = withBasePath(DEFAULT_REDIRECT_FALLBACK),
+): string {
+  ...
+  try {
+    const parsed = new URL(
+      target,
+      globalThis.location?.origin ?? "http://localhost",
+    )
+    if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin)) {
+      return fallback
+    }
+    return `${withBasePath(parsed.pathname)}${parsed.search}${parsed.hash}`
+  } catch {
+    return fallback
+  }
+}
+```
+
+登录页路径生成：
+
+```ts
+export function buildLauncherAuthPath(
+  pathname: "/launcher-login" | "/launcher-setup",
+  redirectTarget: string,
+): string {
+  const safeRedirect = getSafeRedirectTarget(redirectTarget)
+  const authPath = withBasePath(pathname)
+  if (safeRedirect === withBasePath(DEFAULT_REDIRECT_FALLBACK)) {
+    return authPath
+  }
+  return `${authPath}?redirect=${encodeURIComponent(safeRedirect)}`
+}
+```
+
+移动端路径判断先剥离前缀：
+
+```ts
+export function isMobilePathname(pathname: string): boolean {
+  const stripped = stripBasePath(pathname)
+  return stripped === "/mobile" || stripped.startsWith("/mobile/")
+}
+```
+
+当前移动端 redirect target 保留 `/diclaw`：
+
+```ts
+export function getCurrentMobileRedirectTarget(): string {
+  if (typeof globalThis.location === "undefined") {
+    return withBasePath("/mobile")
+  }
+  const { pathname, search, hash } = globalThis.location
+  if (!isMobilePathname(pathname || "/")) {
+    return withBasePath("/mobile")
+  }
+  return `${withBasePath(pathname || "/mobile")}${search}${hash}`
+}
+```
+
+登录页路径判断先剥离前缀：
+
+```ts
+import { stripBasePath } from "@/lib/public-base-path"
+
+/** Normalize URL pathname for comparisons (trailing slashes, empty). */
+export function normalizePathname(p: string): string {
+  const t = stripBasePath(p).replace(/\/+$/, "")
+  return t === "" ? "/" : t
+}
+```
+
+Root route 中先把浏览器路径和 router path 转成内部路径：
+
+```ts
+const windowPath =
+  typeof globalThis.location !== "undefined"
+    ? globalThis.location.pathname || "/"
+    : routerState.pathname
+const appWindowPath = stripBasePath(windowPath)
+const appRouterPath = stripBasePath(routerState.pathname)
+
+const isAuthPage =
+  isLauncherAuthPathname(appWindowPath) ||
+  isLauncherAuthPathname(appRouterPath) ||
+  routerState.matches.some(
+    (m) => m.routeId === "/launcher-login" || m.routeId === "/launcher-setup",
+  )
+const isMobilePage =
+  isMobilePathname(appWindowPath) ||
+  isMobilePathname(appRouterPath) ||
+  routerState.matches.some((m) => m.routeId === "/mobile")
+```
+
+Root route 未登录跳转带前缀：
+
+```ts
+if (!s.initialized) {
+  globalThis.location.assign(
+    isMobilePage
+      ? buildLauncherAuthPath("/launcher-setup", authRedirectTarget)
+      : withBasePath("/launcher-setup"),
+  )
+} else if (!s.authenticated) {
+  globalThis.location.assign(
+    isMobilePage
+      ? buildLauncherAuthPath("/launcher-login", authRedirectTarget)
+      : withBasePath("/launcher-login"),
+  )
+}
+```
+
+退出登录跳转带前缀：
+
+```ts
+const handleLogout = async () => {
+  await postLauncherDashboardLogout()
+  globalThis.location.assign(withBasePath("/launcher-login"))
+}
+```
 
 ### 12. 前端 WebSocket 连接带前缀
 
@@ -392,21 +1311,40 @@ web/frontend/src/components/app-header.tsx
 web/frontend/src/features/chat/controller.ts
 ```
 
+新增 import：
+
+```ts
+import { withBasePath } from "@/lib/public-base-path"
+```
+
 修改前：
 
-```text
-ws://host/pico/ws
+```ts
+const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:"
+const wsUrl = `${wsScheme}//${window.location.host}/pico/ws`
+const url = `${wsUrl}?session_id=${encodeURIComponent(sessionId)}`
+const socket = new WebSocket(url)
 ```
 
-修改后，在 `/diclaw` 前缀部署时：
+修改后：
 
-```text
-ws://host/diclaw/pico/ws
+```ts
+const wsScheme = window.location.protocol === "https:" ? "wss:" : "ws:"
+const wsUrl = `${wsScheme}//${window.location.host}${withBasePath("/pico/ws")}`
+const url = `${wsUrl}?session_id=${encodeURIComponent(sessionId)}`
+const socket = new WebSocket(url)
 ```
 
-正式 HTTPS 环境下为：
+路径变化：
 
 ```text
+默认本地：
+ws://127.0.0.1:18800/pico/ws
+
+/diclaw 前缀：
+ws://127.0.0.1:18800/diclaw/pico/ws
+
+HTTPS 内网域名：
 wss://aiservice.byd.com/diclaw/pico/ws
 ```
 
