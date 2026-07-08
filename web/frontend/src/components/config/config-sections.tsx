@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { withBasePath } from "@/lib/public-base-path"
 
 type UpdateCoreField = <K extends keyof CoreConfigForm>(
   key: K,
@@ -885,15 +886,18 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
 
     setIsLoading(true)
     try {
-      const res = await fetch("/api/config/test-command-patterns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          allow_patterns: allowPatterns,
-          deny_patterns: denyPatterns,
-          command: testCommand,
-        }),
-      })
+      const res = await fetch(
+        withBasePath("/api/config/test-command-patterns"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            allow_patterns: allowPatterns,
+            deny_patterns: denyPatterns,
+            command: testCommand,
+          }),
+        },
+      )
       const data = await res.json()
       setTestResult({
         allowed: data.allowed,

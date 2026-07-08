@@ -33,6 +33,7 @@ import (
 	"github.com/sipeed/picoclaw/web/backend/dashboardauth"
 	"github.com/sipeed/picoclaw/web/backend/launcherconfig"
 	"github.com/sipeed/picoclaw/web/backend/middleware"
+	"github.com/sipeed/picoclaw/web/backend/publicpath"
 	"github.com/sipeed/picoclaw/web/backend/utils"
 )
 
@@ -80,14 +81,15 @@ func isLoopbackLaunchHost(host string) bool {
 func launcherBrowserLaunchSuffix(
 	needsSetup bool,
 	localAutoLogin *middleware.LauncherDashboardLocalAutoLogin,
+	publicBasePath string,
 ) string {
 	if needsSetup {
-		return middleware.LauncherDashboardSetupPath
+		return publicpath.WithBase(publicBasePath, middleware.LauncherDashboardSetupPath)
 	}
 	if localAutoLogin != nil {
-		return localAutoLogin.URLPath()
+		return publicpath.AddBaseToURLPath(publicBasePath, localAutoLogin.URLPath())
 	}
-	return ""
+	return publicpath.WithBase(publicBasePath, "/")
 }
 
 func resolveLauncherHostInput(flagHost string, explicitFlag bool, envHost string) (string, bool, error) {
@@ -571,6 +573,7 @@ func main() {
 		logger.Fatalf("Failed to open launcher listener(s): %v", err)
 	}
 	listeners := openResult.Listeners
+	publicBasePath := publicpath.Normalize(os.Getenv(publicpath.EnvPublicBasePath))
 
 	dashboardSessionCookie, dashErr := middleware.NewLauncherDashboardSessionCookie()
 	if dashErr != nil {
@@ -640,9 +643,10 @@ func main() {
 	mux := http.NewServeMux()
 
 	api.RegisterLauncherAuthRoutes(mux, api.LauncherAuthRouteOpts{
-		SessionCookie: dashboardSessionCookie,
-		PasswordStore: passwordStore,
-		StoreError:    authStoreErr,
+		SessionCookie:  dashboardSessionCookie,
+		PublicBasePath: publicBasePath,
+		PasswordStore:  passwordStore,
+		StoreError:     authStoreErr,
 	})
 
 	// API Routes (e.g. /api/status)
@@ -657,6 +661,7 @@ func main() {
 		launcherCfg.TrustedProxyCIDRs,
 	)
 	apiHandler.SetServerBindHost(hostInput, hostOverrideActive)
+	apiHandler.SetPublicBasePath(publicBasePath)
 	apiHandler.RegisterRoutes(mux)
 
 	// Frontend Embedded Assets
@@ -674,13 +679,15 @@ func main() {
 	dashAuth := middleware.LauncherDashboardAuth(middleware.LauncherDashboardAuthConfig{
 		ExpectedCookie: dashboardSessionCookie,
 		LocalAutoLogin: localAutoLogin,
+		PublicBasePath: publicBasePath,
 	}, accessControlledMux)
+	basePathHandler := publicpath.StripPrefixMiddleware(publicBasePath, middleware.JSONContentType(dashAuth))
 
 	// Apply middleware stack
 	handler := middleware.Recoverer(
 		middleware.Logger(
 			middleware.ReferrerPolicyNoReferrer(
-				middleware.JSONContentType(dashAuth),
+				basePathHandler,
 			),
 		),
 	)
@@ -719,7 +726,7 @@ func main() {
 
 	// Share the local URL with the launcher runtime.
 	serverAddr = fmt.Sprintf("http://%s", net.JoinHostPort(openResult.ProbeHost, effectivePort))
-	browserLaunchURL = serverAddr + launcherBrowserLaunchSuffix(needsInitialSetup, localAutoLogin)
+	browserLaunchURL = serverAddr + launcherBrowserLaunchSuffix(needsInitialSetup, localAutoLogin, publicBasePath)
 
 	// Auto-open browser will be handled by the launcher runtime.
 

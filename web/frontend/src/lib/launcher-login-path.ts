@@ -1,6 +1,8 @@
+import { stripBasePath } from "@/lib/public-base-path"
+
 /** Normalize URL pathname for comparisons (trailing slashes, empty). */
 export function normalizePathname(p: string): string {
-  const t = p.replace(/\/+$/, "")
+  const t = stripBasePath(p).replace(/\/+$/, "")
   return t === "" ? "/" : t
 }
 

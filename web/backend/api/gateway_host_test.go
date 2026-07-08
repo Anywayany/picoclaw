@@ -190,6 +190,20 @@ func TestBuildWsURLUsesWSSWhenForwardedProtoIsHTTPS(t *testing.T) {
 	}
 }
 
+func TestBuildWsURLIncludesPublicBasePath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	h := NewHandler(configPath)
+	h.SetPublicBasePath("/diclaw")
+
+	req := httptest.NewRequest("GET", "http://launcher.local/diclaw/api/pico/info", nil)
+	req.Host = "ids.byd.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := h.buildWsURL(req); got != "wss://ids.byd.com:443/diclaw/pico/ws" {
+		t.Fatalf("buildWsURL() = %q, want %q", got, "wss://ids.byd.com:443/diclaw/pico/ws")
+	}
+}
+
 func TestBuildWsURLUsesWSSWhenRequestIsTLS(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)

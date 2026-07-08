@@ -1,3 +1,5 @@
+import { stripBasePath, withBasePath } from "@/lib/public-base-path"
+
 const DEFAULT_REDIRECT_FALLBACK = "/"
 
 function hasControlCharacter(value: string): boolean {
@@ -9,7 +11,7 @@ function hasControlCharacter(value: string): boolean {
 
 export function getSafeRedirectTarget(
   value: string | null | undefined,
-  fallback = DEFAULT_REDIRECT_FALLBACK,
+  fallback = withBasePath(DEFAULT_REDIRECT_FALLBACK),
 ): string {
   const target = value?.trim()
   if (!target) {
@@ -22,18 +24,21 @@ export function getSafeRedirectTarget(
     return fallback
   }
   try {
-    const parsed = new URL(target, globalThis.location?.origin ?? "http://localhost")
+    const parsed = new URL(
+      target,
+      globalThis.location?.origin ?? "http://localhost",
+    )
     if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin)) {
       return fallback
     }
-    return `${parsed.pathname}${parsed.search}${parsed.hash}`
+    return `${withBasePath(parsed.pathname)}${parsed.search}${parsed.hash}`
   } catch {
     return fallback
   }
 }
 
 export function getRedirectTargetFromLocation(
-  fallback = DEFAULT_REDIRECT_FALLBACK,
+  fallback = withBasePath(DEFAULT_REDIRECT_FALLBACK),
 ): string {
   if (typeof globalThis.location === "undefined") {
     return fallback
@@ -47,23 +52,25 @@ export function buildLauncherAuthPath(
   redirectTarget: string,
 ): string {
   const safeRedirect = getSafeRedirectTarget(redirectTarget)
-  if (safeRedirect === DEFAULT_REDIRECT_FALLBACK) {
-    return pathname
+  const authPath = withBasePath(pathname)
+  if (safeRedirect === withBasePath(DEFAULT_REDIRECT_FALLBACK)) {
+    return authPath
   }
-  return `${pathname}?redirect=${encodeURIComponent(safeRedirect)}`
+  return `${authPath}?redirect=${encodeURIComponent(safeRedirect)}`
 }
 
 export function isMobilePathname(pathname: string): boolean {
-  return pathname === "/mobile" || pathname.startsWith("/mobile/")
+  const stripped = stripBasePath(pathname)
+  return stripped === "/mobile" || stripped.startsWith("/mobile/")
 }
 
 export function getCurrentMobileRedirectTarget(): string {
   if (typeof globalThis.location === "undefined") {
-    return "/mobile"
+    return withBasePath("/mobile")
   }
   const { pathname, search, hash } = globalThis.location
   if (!isMobilePathname(pathname || "/")) {
-    return "/mobile"
+    return withBasePath("/mobile")
   }
-  return `${pathname || "/mobile"}${search}${hash}`
+  return `${withBasePath(pathname || "/mobile")}${search}${hash}`
 }

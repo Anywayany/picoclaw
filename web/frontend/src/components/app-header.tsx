@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/tooltip"
 import { useGateway } from "@/hooks/use-gateway.ts"
 import { useTheme } from "@/hooks/use-theme.ts"
+import { withBasePath } from "@/lib/public-base-path"
 
 export function AppHeader() {
   const { i18n, t } = useTranslation()
@@ -73,7 +74,7 @@ export function AppHeader() {
 
   const handleLogout = async () => {
     await postLauncherDashboardLogout()
-    globalThis.location.assign("/launcher-login")
+    globalThis.location.assign(withBasePath("/launcher-login"))
   }
 
   const handleGatewayToggle = () => {

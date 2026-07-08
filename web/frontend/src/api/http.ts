@@ -1,20 +1,27 @@
-import { isLauncherAuthPathname } from "@/lib/launcher-login-path"
 import {
   buildLauncherAuthPath,
   getCurrentMobileRedirectTarget,
   isMobilePathname,
 } from "@/features/mobile/redirect"
+import { isLauncherAuthPathname } from "@/lib/launcher-login-path"
+import {
+  stripBasePath,
+  withBasePath,
+  withBasePathInput,
+} from "@/lib/public-base-path"
 
 function isLauncherAuthPath(): boolean {
   if (typeof globalThis.location === "undefined") {
     return false
   }
-  if (isLauncherAuthPathname(globalThis.location.pathname || "/")) {
+  if (
+    isLauncherAuthPathname(stripBasePath(globalThis.location.pathname || "/"))
+  ) {
     return true
   }
   try {
     return isLauncherAuthPathname(
-      new URL(globalThis.location.href).pathname || "/",
+      stripBasePath(new URL(globalThis.location.href).pathname || "/"),
     )
   } catch {
     return false
@@ -29,7 +36,7 @@ export async function launcherFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const res = await fetch(input, {
+  const res = await fetch(withBasePathInput(input), {
     credentials: "same-origin",
     ...init,
   })
@@ -40,14 +47,14 @@ export async function launcherFetch(
       typeof globalThis.location !== "undefined" &&
       !isLauncherAuthPath()
     ) {
-      const pathname = globalThis.location.pathname || "/"
+      const pathname = stripBasePath(globalThis.location.pathname || "/")
       globalThis.location.assign(
         isMobilePathname(pathname)
           ? buildLauncherAuthPath(
               "/launcher-login",
               getCurrentMobileRedirectTarget(),
             )
-          : "/launcher-login",
+          : withBasePath("/launcher-login"),
       )
     }
   }

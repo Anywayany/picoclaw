@@ -5,13 +5,14 @@ import { useEffect, useState } from "react"
 import { getLauncherAuthStatus } from "@/api/launcher-auth"
 import { AppLayout } from "@/components/app-layout"
 import { initializeChatStore } from "@/features/chat/controller"
+import { MobileShell } from "@/features/mobile/mobile-shell"
 import {
   buildLauncherAuthPath,
   getCurrentMobileRedirectTarget,
   isMobilePathname,
 } from "@/features/mobile/redirect"
-import { MobileShell } from "@/features/mobile/mobile-shell"
 import { isLauncherAuthPathname } from "@/lib/launcher-login-path"
+import { stripBasePath, withBasePath } from "@/lib/public-base-path"
 
 const RootLayout = () => {
   // Prefer the real address bar path: stale embedded bundles may not register
@@ -28,16 +29,18 @@ const RootLayout = () => {
     typeof globalThis.location !== "undefined"
       ? globalThis.location.pathname || "/"
       : routerState.pathname
+  const appWindowPath = stripBasePath(windowPath)
+  const appRouterPath = stripBasePath(routerState.pathname)
 
   const isAuthPage =
-    isLauncherAuthPathname(windowPath) ||
-    isLauncherAuthPathname(routerState.pathname) ||
+    isLauncherAuthPathname(appWindowPath) ||
+    isLauncherAuthPathname(appRouterPath) ||
     routerState.matches.some(
       (m) => m.routeId === "/launcher-login" || m.routeId === "/launcher-setup",
     )
   const isMobilePage =
-    isMobilePathname(windowPath) ||
-    isMobilePathname(routerState.pathname) ||
+    isMobilePathname(appWindowPath) ||
+    isMobilePathname(appRouterPath) ||
     routerState.matches.some((m) => m.routeId === "/mobile")
 
   const [authError, setAuthError] = useState<string | null>(null)
@@ -49,24 +52,18 @@ const RootLayout = () => {
       .then((s) => {
         const authRedirectTarget = isMobilePage
           ? getCurrentMobileRedirectTarget()
-          : "/"
+          : withBasePath("/")
         if (!s.initialized) {
           globalThis.location.assign(
             isMobilePage
-              ? buildLauncherAuthPath(
-                  "/launcher-setup",
-                  authRedirectTarget,
-                )
-              : "/launcher-setup",
+              ? buildLauncherAuthPath("/launcher-setup", authRedirectTarget)
+              : withBasePath("/launcher-setup"),
           )
         } else if (!s.authenticated) {
           globalThis.location.assign(
             isMobilePage
-              ? buildLauncherAuthPath(
-                  "/launcher-login",
-                  authRedirectTarget,
-                )
-              : "/launcher-login",
+              ? buildLauncherAuthPath("/launcher-login", authRedirectTarget)
+              : withBasePath("/launcher-login"),
           )
         }
       })
@@ -82,7 +79,7 @@ const RootLayout = () => {
                   "/launcher-login",
                   getCurrentMobileRedirectTarget(),
                 )
-              : "/launcher-login",
+              : withBasePath("/launcher-login"),
           )
         } else {
           setAuthError(

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/web/backend/publicpath"
 )
 
 // LauncherDashboardCookieName is the HttpOnly cookie set after a successful password login.
@@ -50,6 +52,8 @@ type LauncherDashboardAuthConfig struct {
 	LocalAutoLogin *LauncherDashboardLocalAutoLogin
 	// SecureCookie sets the session cookie's Secure flag. If nil, DefaultLauncherDashboardSecureCookie is used.
 	SecureCookie func(*http.Request) bool
+	// PublicBasePath is the externally visible path prefix, e.g. /diclaw.
+	PublicBasePath string
 }
 
 // LauncherDashboardLocalAutoLogin is an in-memory, one-shot startup grant.
@@ -98,13 +102,26 @@ func SetLauncherDashboardSessionCookie(
 	sessionValue string,
 	secure func(*http.Request) bool,
 ) {
+	SetLauncherDashboardSessionCookieWithPath(w, r, sessionValue, secure, "/")
+}
+
+func SetLauncherDashboardSessionCookieWithPath(
+	w http.ResponseWriter,
+	r *http.Request,
+	sessionValue string,
+	secure func(*http.Request) bool,
+	cookiePath string,
+) {
 	if secure == nil {
 		secure = DefaultLauncherDashboardSecureCookie
+	}
+	if strings.TrimSpace(cookiePath) == "" {
+		cookiePath = "/"
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     LauncherDashboardCookieName,
 		Value:    sessionValue,
-		Path:     "/",
+		Path:     cookiePath,
 		MaxAge:   launcherDashboardSessionMaxAgeSec,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -114,13 +131,20 @@ func SetLauncherDashboardSessionCookie(
 
 // ClearLauncherDashboardSessionCookie clears the dashboard session (e.g. logout).
 func ClearLauncherDashboardSessionCookie(w http.ResponseWriter, r *http.Request, secure func(*http.Request) bool) {
+	ClearLauncherDashboardSessionCookieWithPath(w, r, secure, "/")
+}
+
+func ClearLauncherDashboardSessionCookieWithPath(w http.ResponseWriter, r *http.Request, secure func(*http.Request) bool, cookiePath string) {
 	if secure == nil {
 		secure = DefaultLauncherDashboardSecureCookie
+	}
+	if strings.TrimSpace(cookiePath) == "" {
+		cookiePath = "/"
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     LauncherDashboardCookieName,
 		Value:    "",
-		Path:     "/",
+		Path:     cookiePath,
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
@@ -146,7 +170,7 @@ func LauncherDashboardAuth(cfg LauncherDashboardAuthConfig, next http.Handler) h
 			next.ServeHTTP(w, r)
 			return
 		}
-		rejectLauncherDashboardAuth(w, r, p)
+		rejectLauncherDashboardAuth(w, r, p, cfg.PublicBasePath)
 	})
 }
 
@@ -154,8 +178,9 @@ func LauncherDashboardAuth(cfg LauncherDashboardAuthConfig, next http.Handler) h
 // prefixes like /assets/../ cannot bypass auth (CVE-class traversal).
 
 func handleLauncherLocalAutoLogin(w http.ResponseWriter, r *http.Request, cfg LauncherDashboardAuthConfig) {
+	basePath := publicpath.Normalize(cfg.PublicBasePath)
 	if validLauncherDashboardAuth(r, cfg) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, publicpath.WithBase(basePath, "/"), http.StatusSeeOther)
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -164,15 +189,15 @@ func handleLauncherLocalAutoLogin(w http.ResponseWriter, r *http.Request, cfg La
 		return
 	}
 	if r.Method == http.MethodHead {
-		rejectLauncherDashboardAuth(w, r, LauncherDashboardLocalAutoLoginPath)
+		rejectLauncherDashboardAuth(w, r, LauncherDashboardLocalAutoLoginPath, cfg.PublicBasePath)
 		return
 	}
 	if cfg.LocalAutoLogin != nil && cfg.LocalAutoLogin.consume(r.URL.Query().Get("nonce")) {
-		SetLauncherDashboardSessionCookie(w, r, cfg.ExpectedCookie, cfg.SecureCookie)
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		SetLauncherDashboardSessionCookieWithPath(w, r, cfg.ExpectedCookie, cfg.SecureCookie, publicpath.CookiePath(basePath))
+		http.Redirect(w, r, publicpath.WithBase(basePath, "/"), http.StatusSeeOther)
 		return
 	}
-	rejectLauncherDashboardAuth(w, r, LauncherDashboardLocalAutoLoginPath)
+	rejectLauncherDashboardAuth(w, r, LauncherDashboardLocalAutoLoginPath, cfg.PublicBasePath)
 }
 
 func (a *LauncherDashboardLocalAutoLogin) consume(nonce string) bool {
@@ -296,7 +321,7 @@ func validLauncherDashboardAuth(r *http.Request, cfg LauncherDashboardAuthConfig
 	return false
 }
 
-func rejectLauncherDashboardAuth(w http.ResponseWriter, r *http.Request, canonicalPath string) {
+func rejectLauncherDashboardAuth(w http.ResponseWriter, r *http.Request, canonicalPath, basePath string) {
 	if canonicalPath == "/pico/ws" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -307,14 +332,16 @@ func rejectLauncherDashboardAuth(w http.ResponseWriter, r *http.Request, canonic
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	http.Redirect(w, r, launcherDashboardLoginRedirectPath(r, canonicalPath), http.StatusFound)
+	http.Redirect(w, r, launcherDashboardLoginRedirectPath(r, canonicalPath, basePath), http.StatusFound)
 }
 
-func launcherDashboardLoginRedirectPath(r *http.Request, canonicalPath string) string {
+func launcherDashboardLoginRedirectPath(r *http.Request, canonicalPath, basePath string) string {
+	basePath = publicpath.Normalize(basePath)
+	loginPath := publicpath.WithBase(basePath, "/launcher-login")
 	if !isMobileDashboardPath(canonicalPath) {
-		return "/launcher-login"
+		return loginPath
 	}
-	return "/launcher-login?redirect=" + url.QueryEscape(r.URL.RequestURI())
+	return loginPath + "?redirect=" + url.QueryEscape(publicpath.EnsureExternalRequestURI(basePath, r))
 }
 
 func isMobileDashboardPath(canonicalPath string) bool {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/netbind"
+	"github.com/sipeed/picoclaw/web/backend/publicpath"
 )
 
 func (h *Handler) effectiveLauncherPublic() bool {
@@ -240,13 +241,13 @@ func (h *Handler) picoWebUIAddr(r *http.Request) string {
 }
 
 func (h *Handler) buildWsURL(r *http.Request) string {
-	return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/ws"
+	return requestWSScheme(r) + "://" + h.picoWebUIAddr(r) + publicpath.WithBase(h.publicBasePath, "/pico/ws")
 }
 
 func (h *Handler) buildPicoEventsURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/events"
+	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + publicpath.WithBase(h.publicBasePath, "/pico/events")
 }
 
 func (h *Handler) buildPicoSendURL(r *http.Request) string {
-	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + "/pico/send"
+	return requestHTTPScheme(r) + "://" + h.picoWebUIAddr(r) + publicpath.WithBase(h.publicBasePath, "/pico/send")
 }

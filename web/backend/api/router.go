@@ -19,6 +19,7 @@ type Handler struct {
 	serverCIDRs                []string
 	serverAllowLocalhostBypass bool
 	serverTrustedProxyCIDRs    []string
+	publicBasePath             string
 	debug                      bool
 	oauthMu                    sync.Mutex
 	oauthFlows                 map[string]*oauthFlow
@@ -55,6 +56,10 @@ func (h *Handler) SetServerOptions(port int, public bool, publicExplicit bool, a
 func (h *Handler) SetServerAccessOptions(allowLocalhostBypass bool, trustedProxyCIDRs []string) {
 	h.serverAllowLocalhostBypass = allowLocalhostBypass
 	h.serverTrustedProxyCIDRs = append([]string(nil), trustedProxyCIDRs...)
+}
+
+func (h *Handler) SetPublicBasePath(basePath string) {
+	h.publicBasePath = basePath
 }
 
 // SetServerBindHost stores the launcher's effective bind host.

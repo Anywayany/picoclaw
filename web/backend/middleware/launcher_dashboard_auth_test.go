@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/web/backend/publicpath"
 )
 
 func TestNewLauncherDashboardSessionCookie(t *testing.T) {
@@ -122,6 +124,29 @@ func TestLauncherDashboardAuth_MobileRedirectPreservesTarget(t *testing.T) {
 	}
 }
 
+func TestLauncherDashboardAuth_PrefixedMobileRedirectPreservesExternalTarget(t *testing.T) {
+	cfg := LauncherDashboardAuthConfig{
+		ExpectedCookie: "deadbeef",
+		PublicBasePath: "/diclaw",
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not run without session cookie")
+	})
+	h := publicpath.StripPrefixMiddleware("/diclaw", LauncherDashboardAuth(cfg, next))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/diclaw/mobile?foo=bar", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	want := "/diclaw/launcher-login?redirect=%2Fdiclaw%2Fmobile%3Ffoo%3Dbar"
+	if got := rec.Header().Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
 func TestLauncherDashboardAuth_NonMobileRedirectDoesNotPreserveQuery(t *testing.T) {
 	cfg := LauncherDashboardAuthConfig{ExpectedCookie: "deadbeef"}
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -138,6 +163,19 @@ func TestLauncherDashboardAuth_NonMobileRedirectDoesNotPreserveQuery(t *testing.
 	}
 	if got := rec.Header().Get("Location"); got != "/launcher-login" {
 		t.Fatalf("Location = %q, want %q", got, "/launcher-login")
+	}
+}
+
+func TestLauncherDashboardAuth_PrefixedSessionCookiePath(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	SetLauncherDashboardSessionCookieWithPath(rec, req, "cookie-value", nil, "/diclaw")
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %#v", cookies)
+	}
+	if got := cookies[0].Path; got != "/diclaw" {
+		t.Fatalf("cookie path = %q, want /diclaw", got)
 	}
 }
 

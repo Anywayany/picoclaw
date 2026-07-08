@@ -81,14 +81,20 @@ func TestLauncherBrowserLaunchSuffix(t *testing.T) {
 		t.Fatalf("NewLauncherDashboardLocalAutoLogin() error = %v", err)
 	}
 
-	if got := launcherBrowserLaunchSuffix(true, autoLogin); got != middleware.LauncherDashboardSetupPath {
+	if got := launcherBrowserLaunchSuffix(true, autoLogin, ""); got != middleware.LauncherDashboardSetupPath {
 		t.Fatalf("setup suffix = %q", got)
 	}
-	if got := launcherBrowserLaunchSuffix(false, autoLogin); !strings.HasPrefix(got, "/launcher-auto-login?nonce=") {
+	if got := launcherBrowserLaunchSuffix(false, autoLogin, ""); !strings.HasPrefix(got, "/launcher-auto-login?nonce=") {
 		t.Fatalf("auto-login suffix = %q", got)
 	}
-	if got := launcherBrowserLaunchSuffix(false, nil); got != "" {
-		t.Fatalf("empty suffix = %q, want empty", got)
+	if got := launcherBrowserLaunchSuffix(false, nil, ""); got != "/" {
+		t.Fatalf("root suffix = %q, want root", got)
+	}
+	if got := launcherBrowserLaunchSuffix(true, autoLogin, "/diclaw"); got != "/diclaw/launcher-setup" {
+		t.Fatalf("prefixed setup suffix = %q", got)
+	}
+	if got := launcherBrowserLaunchSuffix(false, nil, "/diclaw"); got != "/diclaw/" {
+		t.Fatalf("prefixed root suffix = %q", got)
 	}
 }
 

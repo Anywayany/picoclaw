@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/web/backend/middleware"
+	"github.com/sipeed/picoclaw/web/backend/publicpath"
 )
 
 // PasswordStore is the interface for dashboard password persistence.
@@ -22,8 +23,9 @@ type PasswordStore interface {
 
 // LauncherAuthRouteOpts configures dashboard auth handlers.
 type LauncherAuthRouteOpts struct {
-	SessionCookie string
-	SecureCookie  func(*http.Request) bool
+	SessionCookie  string
+	SecureCookie   func(*http.Request) bool
+	PublicBasePath string
 	// PasswordStore enables password login. It must be non-nil for auth to work.
 	PasswordStore PasswordStore
 	// StoreError holds the error returned when opening the password store. When
@@ -55,6 +57,7 @@ func RegisterLauncherAuthRoutes(mux *http.ServeMux, opts LauncherAuthRouteOpts) 
 	h := &launcherAuthHandlers{
 		sessionCookie: opts.SessionCookie,
 		secureCookie:  secure,
+		cookiePath:    publicpath.CookiePath(opts.PublicBasePath),
 		store:         opts.PasswordStore,
 		storeErr:      opts.StoreError,
 		loginLimit:    newLoginRateLimiter(),
@@ -68,6 +71,7 @@ func RegisterLauncherAuthRoutes(mux *http.ServeMux, opts LauncherAuthRouteOpts) 
 type launcherAuthHandlers struct {
 	sessionCookie string
 	secureCookie  func(*http.Request) bool
+	cookiePath    string
 	store         PasswordStore
 	storeErr      error // set when the store failed to open; drives recovery messages
 	loginLimit    *loginRateLimiter
@@ -129,7 +133,7 @@ func (h *launcherAuthHandlers) handleLogin(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	middleware.SetLauncherDashboardSessionCookie(w, r, h.sessionCookie, h.secureCookie)
+	middleware.SetLauncherDashboardSessionCookieWithPath(w, r, h.sessionCookie, h.secureCookie, h.cookiePath)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
@@ -159,7 +163,7 @@ func (h *launcherAuthHandlers) handleLogout(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	middleware.ClearLauncherDashboardSessionCookie(w, r, h.secureCookie)
+	middleware.ClearLauncherDashboardSessionCookieWithPath(w, r, h.secureCookie, h.cookiePath)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

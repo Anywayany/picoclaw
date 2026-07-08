@@ -6,12 +6,14 @@ import ReactDOM from "react-dom/client"
 import { AppProviders } from "./app-providers"
 import "./i18n"
 import "./index.css"
+import { PUBLIC_BASE_PATH } from "./lib/public-base-path"
 import { routeTree } from "./routeTree.gen"
 
 const queryClient = new QueryClient()
 
 const router = createRouter({
   routeTree,
+  basepath: PUBLIC_BASE_PATH || "/",
   context: {
     queryClient,
   },
