@@ -52,6 +52,19 @@
       "noDefaultModel": "Chat nedostupný: žádný výchozí model není vybrán. Nastavte výchozí model na stránce Modely."
     },
     "newChat": "Nový chat",
+    "workspace": {
+      "title": "Workspace",
+      "description": "Procházejte soubory v aktuálním workspace.",
+      "fileTree": "Soubory workspace",
+      "loading": "Načítání workspace...",
+      "loadFailed": "Workspace se nepodařilo načíst.",
+      "retry": "Zkusit znovu",
+      "refresh": "Obnovit workspace",
+      "close": "Zavřít workspace",
+      "resize": "Změnit šířku panelu workspace",
+      "empty": "Tento workspace je prázdný.",
+      "emptyFolder": "Prázdná složka"
+    },
     "notConnected": "Gateway není spuštěna. Spusťte ji pro zahájení chatu.",
     "thinking": {
       "step1": "Přemýšlím...",

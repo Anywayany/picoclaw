@@ -1,9 +1,10 @@
-import { IconPlus } from "@tabler/icons-react"
+import { IconFolder, IconPlus } from "@tabler/icons-react"
 import { useAtomValue } from "jotai"
 import { type ChangeEvent, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { MobileSessionHistory } from "@/components/chat/mobile-session-history"
+import { WorkspaceSidebar } from "@/components/chat/workspace-sidebar"
 import { Button } from "@/components/ui/button"
 import {
   buildChatFileAttachments,
@@ -76,6 +77,7 @@ export function MobileChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [input, setInput] = useState("")
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false)
   const { status: gatewayStatus } = useAtomValue(gatewayAtom)
   const {
     messages,
@@ -175,12 +177,26 @@ export function MobileChatPage() {
 
   return (
     <div className="bg-background flex h-full min-h-0 flex-col">
-      <header className="border-border/60 bg-background/95 supports-[backdrop-filter]:bg-background/80 grid h-12 shrink-0 grid-cols-[36px_1fr_36px] items-center border-b px-3 backdrop-blur">
-        <MobileSessionHistory
-          activeSessionId={activeSessionId}
-          onSwitchSession={switchSession}
-          onNewChat={newChat}
-        />
+      <header className="border-border/60 bg-background/95 supports-[backdrop-filter]:bg-background/80 grid h-12 shrink-0 grid-cols-[76px_1fr_76px] items-center border-b px-3 backdrop-blur">
+        <div className="flex items-center gap-1">
+          <MobileSessionHistory
+            activeSessionId={activeSessionId}
+            onSwitchSession={switchSession}
+            onNewChat={newChat}
+          />
+          <Button
+            type="button"
+            variant={isWorkspaceOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            onClick={() => setIsWorkspaceOpen((open) => !open)}
+            aria-label={t("chat.workspace.title")}
+            aria-expanded={isWorkspaceOpen}
+            title={t("chat.workspace.title")}
+          >
+            <IconFolder className="size-5" />
+          </Button>
+        </div>
         <div className="min-w-0 text-center">
           <div className="truncate text-sm font-semibold">DiAgent</div>
           <div
@@ -207,6 +223,12 @@ export function MobileChatPage() {
           <IconPlus className="size-5" />
         </Button>
       </header>
+
+      <WorkspaceSidebar
+        open={isWorkspaceOpen}
+        onOpenChange={setIsWorkspaceOpen}
+        forceSheet
+      />
 
       {disabledKey && gatewayStatus !== "running" ? (
         <div className="border-border/60 bg-muted/45 text-muted-foreground border-b px-3 py-2 text-sm">

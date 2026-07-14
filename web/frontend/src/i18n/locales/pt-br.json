@@ -52,6 +52,19 @@
       "noDefaultModel": "Não é possível conversar: nenhum modelo padrão está selecionado. Defina um modelo padrão na página de Modelos."
     },
     "newChat": "Novo Chat",
+    "workspace": {
+      "title": "Workspace",
+      "description": "Navegue pelos arquivos do workspace atual.",
+      "fileTree": "Arquivos do workspace",
+      "loading": "Carregando workspace...",
+      "loadFailed": "Não foi possível carregar o workspace.",
+      "retry": "Tentar novamente",
+      "refresh": "Atualizar workspace",
+      "close": "Fechar workspace",
+      "resize": "Redimensionar painel do workspace",
+      "empty": "Este workspace está vazio.",
+      "emptyFolder": "Pasta vazia"
+    },
     "notConnected": "O Gateway não está rodando. Inicie-o para conversar.",
     "thinking": {
       "step1": "Pensando...",

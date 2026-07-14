@@ -1,4 +1,4 @@
-import { IconPlus } from "@tabler/icons-react"
+import { IconFolder, IconPlus } from "@tabler/icons-react"
 import { useAtom } from "jotai"
 import {
   type ChangeEvent,
@@ -20,6 +20,7 @@ import { ModelSelector } from "@/components/chat/model-selector"
 import { SessionHistoryMenu } from "@/components/chat/session-history-menu"
 import { TypingIndicator } from "@/components/chat/typing-indicator"
 import { UserMessage } from "@/components/chat/user-message"
+import { WorkspaceSidebar } from "@/components/chat/workspace-sidebar"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import {
@@ -112,6 +113,7 @@ export function ChatPage() {
   const [input, setInput] = useState("")
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [isDragActive, setIsDragActive] = useState(false)
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false)
   const [assistantDetailVisibility, setAssistantDetailVisibility] = useAtom(
     assistantDetailVisibilityAtom,
   )
@@ -386,6 +388,18 @@ export function ChatPage() {
         </div>
 
         <Button
+          variant={isWorkspaceOpen ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => setIsWorkspaceOpen((open) => !open)}
+          className="h-9 gap-2"
+          aria-expanded={isWorkspaceOpen}
+          aria-controls="workspace-sidebar"
+        >
+          <IconFolder className="size-4" />
+          <span className="hidden lg:inline">{t("chat.workspace.title")}</span>
+        </Button>
+
+        <Button
           variant="secondary"
           size="sm"
           onClick={newChat}
@@ -412,92 +426,105 @@ export function ChatPage() {
         />
       </PageHeader>
 
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto px-4 py-6 md:px-8 lg:px-24 xl:px-48"
-      >
-        <div className="mx-auto flex w-full max-w-250 flex-col gap-8 pb-8">
-          {messages.length === 0 && !isTyping && (
-            <ChatEmptyState
-              hasAvailableModels={hasAvailableModels}
-              defaultModelName={defaultModelName}
-              isConnected={isGatewayRunning}
-            />
-          )}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto px-4 py-6 md:px-8 lg:px-24 xl:px-48"
+          >
+            <div className="mx-auto flex w-full max-w-250 flex-col gap-8 pb-8">
+              {messages.length === 0 && !isTyping && (
+                <ChatEmptyState
+                  hasAvailableModels={hasAvailableModels}
+                  defaultModelName={defaultModelName}
+                  isConnected={isGatewayRunning}
+                />
+              )}
 
-          {messages.map((msg) => {
-            if (
-              !shouldShowAssistantMessage(assistantDetailVisibility, msg.kind)
-            ) {
-              return null
-            }
+              {messages.map((msg) => {
+                if (
+                  !shouldShowAssistantMessage(
+                    assistantDetailVisibility,
+                    msg.kind,
+                  )
+                ) {
+                  return null
+                }
 
-            return (
-              <div key={msg.id} className="flex w-full">
-                {msg.role === "assistant" ? (
-                  <AssistantMessage
-                    content={msg.content}
-                    attachments={msg.attachments}
-                    kind={msg.kind}
-                    modelName={msg.modelName}
-                    toolCalls={msg.toolCalls}
-                    timestamp={msg.timestamp}
-                  />
-                ) : (
-                  <UserMessage
-                    content={msg.content}
-                    attachments={msg.attachments}
-                    timestamp={msg.timestamp}
-                  />
-                )}
-              </div>
-            )
-          })}
+                return (
+                  <div key={msg.id} className="flex w-full">
+                    {msg.role === "assistant" ? (
+                      <AssistantMessage
+                        content={msg.content}
+                        attachments={msg.attachments}
+                        kind={msg.kind}
+                        modelName={msg.modelName}
+                        toolCalls={msg.toolCalls}
+                        timestamp={msg.timestamp}
+                      />
+                    ) : (
+                      <UserMessage
+                        content={msg.content}
+                        attachments={msg.attachments}
+                        timestamp={msg.timestamp}
+                      />
+                    )}
+                  </div>
+                )
+              })}
 
-          {isTyping && <TypingIndicator />}
+              {isTyping && <TypingIndicator />}
+            </div>
+          </div>
+
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept={CHAT_IMAGE_ACCEPT}
+            multiple
+            className="hidden"
+            onChange={handleImageSelection}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelection}
+          />
+
+          <ChatComposer
+            input={input}
+            attachments={attachments}
+            onInputChange={setInput}
+            onAddImages={handleAddImages}
+            onAddFiles={handleAddFiles}
+            onPaste={handleComposerPaste}
+            onDragEnter={handleComposerDragEnter}
+            onDragLeave={handleComposerDragLeave}
+            onDragOver={handleComposerDragOver}
+            onDrop={handleComposerDrop}
+            onRemoveAttachment={handleRemoveAttachment}
+            onSend={handleSend}
+            onContextDetail={() => {
+              if (sendMessage({ content: "/context", attachments: [] })) {
+                setInput("")
+              }
+            }}
+            inputDisabledReason={inputDisabledReason}
+            canSend={canSubmit}
+            isDragActive={isDragActive}
+            contextUsage={contextUsage}
+          />
         </div>
+
+        <WorkspaceSidebar
+          id="workspace-sidebar"
+          open={isWorkspaceOpen}
+          onOpenChange={setIsWorkspaceOpen}
+        />
       </div>
-
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept={CHAT_IMAGE_ACCEPT}
-        multiple
-        className="hidden"
-        onChange={handleImageSelection}
-      />
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleFileSelection}
-      />
-
-      <ChatComposer
-        input={input}
-        attachments={attachments}
-        onInputChange={setInput}
-        onAddImages={handleAddImages}
-        onAddFiles={handleAddFiles}
-        onPaste={handleComposerPaste}
-        onDragEnter={handleComposerDragEnter}
-        onDragLeave={handleComposerDragLeave}
-        onDragOver={handleComposerDragOver}
-        onDrop={handleComposerDrop}
-        onRemoveAttachment={handleRemoveAttachment}
-        onSend={handleSend}
-        onContextDetail={() => {
-          if (sendMessage({ content: "/context", attachments: [] })) {
-            setInput("")
-          }
-        }}
-        inputDisabledReason={inputDisabledReason}
-        canSend={canSubmit}
-        isDragActive={isDragActive}
-        contextUsage={contextUsage}
-      />
     </div>
   )
 }

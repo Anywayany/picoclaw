@@ -52,6 +52,19 @@
       "noDefaultModel": "Unable to chat: No default model is selected. Set a default model on the Models page."
     },
     "newChat": "New Chat",
+    "workspace": {
+      "title": "Workspace",
+      "description": "Browse files in the current workspace.",
+      "fileTree": "Workspace files",
+      "loading": "Loading workspace...",
+      "loadFailed": "Could not load the workspace.",
+      "retry": "Try again",
+      "refresh": "Refresh workspace",
+      "close": "Close workspace",
+      "resize": "Resize workspace panel",
+      "empty": "This workspace is empty.",
+      "emptyFolder": "Empty folder"
+    },
     "notConnected": "Gateway is not running. Start it to chat.",
     "thinking": {
       "step1": "Thinking...",
