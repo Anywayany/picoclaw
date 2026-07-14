@@ -4447,25 +4447,18 @@ func (p *inlineAttachmentSaveProvider) Chat(
 	p.calls++
 
 	hasMedia := false
-	hasPath := false
+	hasRequestedTarget := p.targetPath == ""
+	hasAttachmentPath := false
 	for _, msg := range messages {
 		if p.targetPath != "" && strings.Contains(msg.Content, p.targetPath) {
-			hasPath = true
+			hasRequestedTarget = true
 		}
-		if p.pathPrefix != "" {
-			start := strings.Index(msg.Content, p.pathPrefix)
-			if start >= 0 {
-				rest := msg.Content[start:]
-				end := strings.IndexAny(rest, "\n ]")
-				if end < 0 {
-					end = len(rest)
-				}
+		if start := strings.Index(msg.Content, "[image:"); start >= 0 {
+			rest := msg.Content[start+len("[image:"):]
+			if end := strings.IndexByte(rest, ']'); end >= 0 {
 				p.seenPath = rest[:end]
-				hasPath = true
+				hasAttachmentPath = p.pathPrefix == "" || strings.HasPrefix(p.seenPath, p.pathPrefix)
 			}
-		}
-		if strings.Contains(msg.Content, "[image:") || strings.Contains(msg.Content, "[file:") {
-			return nil, fmt.Errorf("text provider unexpectedly received media path tag in save task: %q", msg.Content)
 		}
 		for _, ref := range msg.Media {
 			if strings.TrimSpace(ref) != "" {
@@ -4475,17 +4468,20 @@ func (p *inlineAttachmentSaveProvider) Chat(
 		}
 	}
 	p.mediaSeen = append(p.mediaSeen, hasMedia)
-	p.pathSeen = append(p.pathSeen, hasPath)
+	p.pathSeen = append(p.pathSeen, hasAttachmentPath)
 
 	if hasMedia {
 		return nil, fmt.Errorf("text provider unexpectedly received image media")
 	}
-	if !hasPath {
-		return nil, fmt.Errorf("text provider did not receive saved image path tag")
+	if !hasRequestedTarget {
+		return nil, fmt.Errorf("text provider did not receive the user's requested target path")
+	}
+	if !hasAttachmentPath {
+		return nil, fmt.Errorf("text provider did not receive temporary image path tag")
 	}
 
 	return &providers.LLMResponse{
-		Content:   "saved",
+		Content:   "agent-decided",
 		ToolCalls: []providers.ToolCall{},
 	}, nil
 }
@@ -4801,7 +4797,7 @@ func TestAgentLoop_VisionUnsupportedErrorReturnsClearFailure(t *testing.T) {
 	}
 }
 
-func TestAgentLoop_InlineImageAttachmentSaveTargetBypassesVisionInput(t *testing.T) {
+func TestAgentLoop_InlineImageSaveRequestIsLeftForAgentDecision(t *testing.T) {
 	workspace := t.TempDir()
 	targetPath := filepath.Join(t.TempDir(), "mobile-attachment.png")
 	pngBytes := []byte{
@@ -4846,8 +4842,8 @@ func TestAgentLoop_InlineImageAttachmentSaveTargetBypassesVisionInput(t *testing
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if resp != "saved" {
-		t.Fatalf("response = %q, want %q", resp, "saved")
+	if resp != "agent-decided" {
+		t.Fatalf("response = %q, want %q", resp, "agent-decided")
 	}
 	if provider.calls != 1 {
 		t.Fatalf("calls = %d, want %d", provider.calls, 1)
@@ -4859,16 +4855,19 @@ func TestAgentLoop_InlineImageAttachmentSaveTargetBypassesVisionInput(t *testing
 		t.Fatalf("pathSeen = %v, want %v", provider.pathSeen, []bool{true})
 	}
 
-	saved, err := os.ReadFile(targetPath)
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("backend unexpectedly wrote requested target %q: %v", targetPath, err)
+	}
+	saved, err := os.ReadFile(provider.seenPath)
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
+		t.Fatalf("ReadFile(%q) error = %v", provider.seenPath, err)
 	}
 	if !slices.Equal(saved, pngBytes) {
-		t.Fatalf("saved bytes = %v, want %v", saved, pngBytes)
+		t.Fatalf("temporary bytes = %v, want %v", saved, pngBytes)
 	}
 }
 
-func TestAgentLoop_InlineImageAttachmentSaveAttachedImageToTmpPath(t *testing.T) {
+func TestAgentLoop_InlineImageSaveTargetIsNotWrittenBeforeAgentActs(t *testing.T) {
 	workspace := t.TempDir()
 	targetPath := filepath.Join(os.TempDir(), "picoclaw-agent-test-attachment-1.png")
 	t.Cleanup(func() {
@@ -4915,8 +4914,8 @@ func TestAgentLoop_InlineImageAttachmentSaveAttachedImageToTmpPath(t *testing.T)
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if resp != "saved" {
-		t.Fatalf("response = %q, want %q", resp, "saved")
+	if resp != "agent-decided" {
+		t.Fatalf("response = %q, want %q", resp, "agent-decided")
 	}
 	if !slices.Equal(provider.mediaSeen, []bool{false}) {
 		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{false})
@@ -4925,16 +4924,19 @@ func TestAgentLoop_InlineImageAttachmentSaveAttachedImageToTmpPath(t *testing.T)
 		t.Fatalf("pathSeen = %v, want %v", provider.pathSeen, []bool{true})
 	}
 
-	saved, err := os.ReadFile(targetPath)
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("backend unexpectedly wrote requested target %q: %v", targetPath, err)
+	}
+	saved, err := os.ReadFile(provider.seenPath)
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
+		t.Fatalf("ReadFile(%q) error = %v", provider.seenPath, err)
 	}
 	if !slices.Equal(saved, pngBytes) {
-		t.Fatalf("saved bytes = %v, want %v", saved, pngBytes)
+		t.Fatalf("temporary bytes = %v, want %v", saved, pngBytes)
 	}
 }
 
-func TestAgentLoop_InlineImageAttachmentSaveIntentWithoutTargetUsesTempPath(t *testing.T) {
+func TestAgentLoop_InlineImageSaveRequestWithoutTargetReachesAgent(t *testing.T) {
 	workspace := t.TempDir()
 	pngBytes := []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
@@ -4979,8 +4981,8 @@ func TestAgentLoop_InlineImageAttachmentSaveIntentWithoutTargetUsesTempPath(t *t
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if resp != "saved" {
-		t.Fatalf("response = %q, want %q", resp, "saved")
+	if resp != "agent-decided" {
+		t.Fatalf("response = %q, want %q", resp, "agent-decided")
 	}
 	if !slices.Equal(provider.mediaSeen, []bool{false}) {
 		t.Fatalf("mediaSeen = %v, want %v", provider.mediaSeen, []bool{false})
@@ -5056,7 +5058,8 @@ func TestAgentLoop_HistoricalInlineDataURLsAreNotReplayedToProvider(t *testing.T
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), responseTimeout)
 	defer cancel()
 
-	// Turn 1: Send an image with save intent.
+	// Turn 1: Send an image with a save request. The backend must leave the
+	// decision and any durable write to the agent.
 	targetPath := filepath.Join(workspace, "saved-attachment.png")
 	resp, err := al.processMessage(timeoutCtx, testInboundMessage(bus.InboundMessage{
 		Context: bus.InboundContext{
@@ -5080,9 +5083,18 @@ func TestAgentLoop_HistoricalInlineDataURLsAreNotReplayedToProvider(t *testing.T
 		t.Fatalf("Turn 1 call count = %d, want 1", len(provider.calls))
 	}
 
-	// Verify the image was saved to disk.
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-		t.Fatalf("Turn 1: expected image saved to %s, but file not found", targetPath)
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("Turn 1: backend unexpectedly wrote target %s: %v", targetPath, err)
+	}
+	turn1SawAttachment := false
+	for _, msg := range provider.calls[0] {
+		if strings.Contains(msg.Content, targetPath) && strings.Contains(msg.Content, "[image:") {
+			turn1SawAttachment = true
+			break
+		}
+	}
+	if !turn1SawAttachment {
+		t.Fatal("Turn 1: agent did not receive the original save request and temporary image path")
 	}
 
 	// Turn 2: Send a plain text follow-up on the same session.

@@ -80,6 +80,35 @@ type startupBlockedProvider struct {
 	reason string
 }
 
+func startRuntimeMediaStore(cfg *config.Config) media.MediaStore {
+	cleanerCfg := media.MediaCleanerConfig{
+		Enabled:  cfg.Tools.MediaCleanup.Enabled,
+		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
+		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
+	}
+
+	if cleanerCfg.Enabled && cleanerCfg.MaxAge > 0 {
+		dir := filepath.Join(cfg.WorkspacePath(), "tmp", "picoclaw-attachments")
+		removed, err := media.SweepExpiredFiles(dir, cleanerCfg.MaxAge)
+		if err != nil {
+			logger.WarnCF("media", "Startup cleanup could not remove all expired files", map[string]any{
+				"directory": dir,
+				"error":     err.Error(),
+			})
+		}
+		if removed > 0 {
+			logger.InfoCF("media", "Startup cleanup removed expired files", map[string]any{
+				"directory": dir,
+				"removed":   removed,
+			})
+		}
+	}
+
+	store := media.NewFileMediaStoreWithCleanup(cleanerCfg)
+	store.Start()
+	return store
+}
+
 func logChannelVoiceCapabilities(cm *channels.Manager, asrAvailable bool, ttsAvailable bool) {
 	if cm == nil {
 		return
@@ -455,14 +484,7 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
-	}
+	runningServices.MediaStore = startRuntimeMediaStore(cfg)
 
 	runningServices.ChannelManager, err = channels.NewManager(
 		cfg,
@@ -703,14 +725,7 @@ func restartServices(
 	}
 	fmt.Println("  ✓ Heartbeat service restarted")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
-	}
+	runningServices.MediaStore = startRuntimeMediaStore(cfg)
 	if runningServices.ChannelManager != nil {
 		runningServices.ChannelManager.SetMediaStore(runningServices.MediaStore)
 	}

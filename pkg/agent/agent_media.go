@@ -30,7 +30,6 @@ var (
 	audioPlaceholderRegex = regexp.MustCompile(`\[audio(:\s+[^\]]*)?\]`)
 	videoPlaceholderRegex = regexp.MustCompile(`\[video(:\s+[^\]]*)?\]`)
 	filePlaceholderRegex  = regexp.MustCompile(`\[file(:\s+[^\]]*)?\]`)
-	tmpImagePathRegex     = regexp.MustCompile(`/tmp/[^\s"'<>，。；;]+`)
 )
 
 func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart int) int {
@@ -41,6 +40,10 @@ func normalizeCurrentTurnStart(messages []providers.Message, currentTurnStart in
 		return len(messages)
 	}
 	return currentTurnStart
+}
+
+func mediaAttachmentSystemPromptRule() string {
+	return "**Media attachments** - Paths in [image:/path], [audio:/path], [video:/path], and [file:/path] tags are managed temporary files. Decide from the user's actual request whether to inspect, process, or preserve them. If the user asks to save, copy, move, or export an attachment, use an available tool to create the requested durable file and only report success after the tool succeeds. Do not treat the temporary attachment path itself as a completed save."
 }
 
 func currentTurnMessages(messages []providers.Message, currentTurnStart int) []providers.Message {
@@ -91,38 +94,15 @@ func resolveMediaRefs(
 		msg := m
 		resolved := make([]string, 0, len(m.Media))
 		var pathTags []string
-		var savedAttachmentPaths []string
-		attachmentSaveIntent := false
-		attachmentSaveTarget := ""
-		if m.Role == "user" && idx >= currentTurnStart {
-			attachmentSaveIntent = isAttachmentSaveIntent(m.Content)
-			if attachmentSaveIntent {
-				attachmentSaveTarget = extractAttachmentSaveTarget(m.Content)
-			}
-		}
 
 		for _, ref := range m.Media {
-			if strings.HasPrefix(ref, "data:image/") && attachmentSaveIntent {
-				localPath, _, err := saveDataImageRef(ref, attachmentSaveTarget, workspaceDir, maxSize)
-				if err != nil {
-					logger.WarnCF("agent", "Failed to save inline image attachment", map[string]any{
-						"path":  attachmentSaveTarget,
-						"error": err.Error(),
-					})
-					resolved = append(resolved, ref)
-					continue
-				}
-				savedAttachmentPaths = append(savedAttachmentPaths, localPath)
-				continue
-			}
-
 			// Convert current-turn inline data: URLs to temp files with path
 			// tags, consistent with how channel media:// refs are handled.
 			// This prevents sending image_url blocks to non-vision models
 			// (e.g. deepseek-v4-flash) while still letting the model access
 			// the file via load_image.
 			if strings.HasPrefix(ref, "data:image/") && m.Role == "user" && idx >= currentTurnStart {
-				localPath, mime, err := saveDataImageRef(ref, "", workspaceDir, maxSize)
+				localPath, mime, err := saveDataImageRef(ref, workspaceDir, maxSize)
 				if err != nil {
 					logger.WarnCF("agent", "Failed to save inline image for current turn", map[string]any{
 						"error": err.Error(),
@@ -130,6 +110,7 @@ func resolveMediaRefs(
 					resolved = append(resolved, ref)
 					continue
 				}
+				registerInlineImageForCleanup(store, localPath, mime)
 				pathTags = append(pathTags, buildPathTag(mime, localPath))
 				continue
 			}
@@ -180,9 +161,7 @@ func resolveMediaRefs(
 		}
 
 		msg.Media = resolved
-		if len(savedAttachmentPaths) > 0 {
-			msg.Content = savedAttachmentNotice(savedAttachmentPaths)
-		} else if len(pathTags) > 0 {
+		if len(pathTags) > 0 {
 			msg.Content = injectPathTags(msg.Content, pathTags)
 		}
 		result = append(result, msg)
@@ -197,62 +176,7 @@ func resolveMediaRefs(
 	return result
 }
 
-func isAttachmentSaveIntent(content string) bool {
-	lower := strings.ToLower(content)
-	if !containsAny(lower, []string{
-		"save", "write", "copy", "store", "persist", "export",
-		"保存", "存到", "另存", "写入", "复制", "导出",
-	}) {
-		return false
-	}
-	if !containsAny(lower, []string{
-		"image", "photo", "picture", "attachment", "attached", "upload", "file",
-		"图片", "图像", "照片", "附件", "附图", "截图", "上传", "文件",
-	}) {
-		return false
-	}
-	return true
-}
-
-func extractAttachmentSaveTarget(content string) string {
-	for _, match := range tmpImagePathRegex.FindAllString(content, -1) {
-		target := strings.TrimRight(match, ".,;:，。；：)）]】")
-		if isAllowedInlineAttachmentSaveTarget(target) && hasImageFileExtension(target) {
-			return filepath.Clean(target)
-		}
-	}
-	return ""
-}
-
-func containsAny(s string, needles []string) bool {
-	for _, needle := range needles {
-		if strings.Contains(s, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func isAllowedInlineAttachmentSaveTarget(path string) bool {
-	if !filepath.IsAbs(path) {
-		return false
-	}
-	cleanPath := filepath.Clean(path)
-	tmpDir := filepath.Clean(os.TempDir())
-	rel, err := filepath.Rel(tmpDir, cleanPath)
-	return err == nil && rel != "." && filepath.IsLocal(rel)
-}
-
-func hasImageFileExtension(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp":
-		return true
-	default:
-		return false
-	}
-}
-
-func saveDataImageRef(ref, targetPath, defaultDir string, maxSize int) (string, string, error) {
+func saveDataImageRef(ref, defaultDir string, maxSize int) (string, string, error) {
 	comma := strings.IndexByte(ref, ',')
 	if comma < 0 {
 		return "", "", os.ErrInvalid
@@ -285,22 +209,14 @@ func saveDataImageRef(ref, targetPath, defaultDir string, maxSize int) (string, 
 		return "", "", os.ErrInvalid
 	}
 
-	cleanTarget := filepath.Clean(targetPath)
-	if cleanTarget == "." || cleanTarget == "" {
-		var err error
-		if defaultDir != "" {
-			cleanTarget, err = createAttachmentPathInDir(defaultDir, mime)
-		} else {
-			cleanTarget, err = createDefaultInlineAttachmentPath(mime)
-		}
-		if err != nil {
-			return "", "", err
-		}
-	} else if !isAllowedInlineAttachmentSaveTarget(cleanTarget) || !hasImageFileExtension(cleanTarget) {
+	var cleanTarget string
+	if defaultDir != "" {
+		cleanTarget, err = createAttachmentPathInDir(defaultDir, mime)
+	} else {
 		cleanTarget, err = createDefaultInlineAttachmentPath(mime)
-		if err != nil {
-			return "", "", err
-		}
+	}
+	if err != nil {
+		return "", "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o700); err != nil {
 		return "", "", err
@@ -309,6 +225,29 @@ func saveDataImageRef(ref, targetPath, defaultDir string, maxSize int) (string, 
 		return "", "", err
 	}
 	return cleanTarget, mime, nil
+}
+
+// registerInlineImageForCleanup hands ownership of a decoded inline image to
+// the shared MediaStore. The returned media ref is intentionally not exposed:
+// the current model turn consumes the local path, while the store keeps the
+// file alive until its configured TTL expires and then removes it.
+func registerInlineImageForCleanup(store media.MediaStore, localPath, mime string) {
+	if store == nil || localPath == "" {
+		return
+	}
+
+	_, err := store.Store(localPath, media.MediaMeta{
+		Filename:      filepath.Base(localPath),
+		ContentType:   mime,
+		Source:        "agent:inline-image",
+		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+	}, "agent:inline-image:"+localPath)
+	if err != nil {
+		logger.WarnCF("agent", "Failed to register inline image for cleanup", map[string]any{
+			"path":  localPath,
+			"error": err.Error(),
+		})
+	}
 }
 
 func createAttachmentPathInDir(baseDir, mime string) (string, error) {
@@ -487,17 +426,6 @@ func buildPathTag(mime, localPath string) string {
 	default:
 		return "[file:" + localPath + "]"
 	}
-}
-
-func savedAttachmentNotice(paths []string) string {
-	var b strings.Builder
-	b.WriteString("The user asked to save image attachment(s). The backend has already saved them to:")
-	for _, path := range paths {
-		b.WriteString("\n- ")
-		b.WriteString(path)
-	}
-	b.WriteString("\nReply that the image attachment has been saved. Do not call load_image, write_file, edit_file, exec, or other tools. Do not inspect or analyze the image contents.")
-	return b.String()
 }
 
 // injectPathTags replaces generic media tags in content with path-bearing versions,

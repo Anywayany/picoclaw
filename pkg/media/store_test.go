@@ -144,7 +144,7 @@ func TestReleaseAllSharedPathDeletesOnFinalRefOnly(t *testing.T) {
 	}
 }
 
-func TestReleaseAllMixedPoliciesKeepsFile(t *testing.T) {
+func TestReleaseAllOwnedPathRemainsDeleteEligibleWhenBorrowed(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFileMediaStore()
 
@@ -172,8 +172,37 @@ func TestReleaseAllMixedPoliciesKeepsFile(t *testing.T) {
 	if err := store.ReleaseAll("borrowed"); err != nil {
 		t.Fatalf("ReleaseAll(borrowed) failed: %v", err)
 	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("owned path should be deleted after the final borrowed ref is released: %v", err)
+	}
+}
+
+func TestReleaseAllBorrowedPathRemainsProtectedFromLaterOwnedRef(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileMediaStore()
+
+	path := createTempFile(t, dir, "workspace.txt")
+	if _, err := store.Store(path, MediaMeta{
+		Source:        "tool:load_image",
+		CleanupPolicy: CleanupPolicyForgetOnly,
+	}, "borrowed"); err != nil {
+		t.Fatalf("Store(borrowed) failed: %v", err)
+	}
+	if _, err := store.Store(path, MediaMeta{
+		Source:        "test",
+		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
+	}, "owned-later"); err != nil {
+		t.Fatalf("Store(owned-later) failed: %v", err)
+	}
+
+	if err := store.ReleaseAll("borrowed"); err != nil {
+		t.Fatalf("ReleaseAll(borrowed) failed: %v", err)
+	}
+	if err := store.ReleaseAll("owned-later"); err != nil {
+		t.Fatalf("ReleaseAll(owned-later) failed: %v", err)
+	}
 	if _, err := os.Stat(path); err != nil {
-		t.Errorf("mixed-policy path should not be auto-deleted: %v", err)
+		t.Errorf("initially borrowed path must remain on disk: %v", err)
 	}
 }
 
@@ -519,6 +548,35 @@ func TestCleanExpiredSharedPathDeletesOnFinalRefOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("shared file should be deleted after final ref is released")
+	}
+}
+
+func TestCleanExpiredOwnedPathStillDeletesAfterForgetOnlyBorrow(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	store := newTestStoreWithCleanup(10 * time.Minute)
+	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
+
+	path := createTempFile(t, dir, "inline-image.png")
+	if _, err := store.Store(path, MediaMeta{
+		Source:        "agent:inline-image",
+		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
+	}, "agent:inline-image"); err != nil {
+		t.Fatalf("Store(owner) failed: %v", err)
+	}
+	if _, err := store.Store(path, MediaMeta{
+		Source:        "tool:load_image",
+		CleanupPolicy: CleanupPolicyForgetOnly,
+	}, "tool:load_image"); err != nil {
+		t.Fatalf("Store(borrower) failed: %v", err)
+	}
+
+	store.nowFunc = func() time.Time { return now }
+	if removed := store.CleanExpired(); removed != 2 {
+		t.Fatalf("CleanExpired() = %d, want 2", removed)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("owned temporary image still exists after all refs expired: %v", err)
 	}
 }
 

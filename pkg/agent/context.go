@@ -159,6 +159,7 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules,
 		accuracyRule,
 		"**Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.",
+		mediaAttachmentSystemPromptRule(),
 	)
 	if includeToolUseRule {
 		rules = append(

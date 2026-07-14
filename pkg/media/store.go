@@ -135,11 +135,11 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 
 	pathState := s.pathStates[localPath]
 	if pathState.refCount == 0 {
+		// The first registration establishes ownership of the underlying path.
+		// Later refs may borrow the same file with ForgetOnly (for example,
+		// load_image reading an agent-managed temporary image), but borrowing
+		// must not revoke the original owner's cleanup responsibility.
 		pathState.deleteEligible = meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup
-	} else if meta.CleanupPolicy == CleanupPolicyForgetOnly {
-		// Be conservative: once a path is borrowed externally, never let this
-		// lifecycle auto-delete it even if store-managed refs also exist.
-		pathState.deleteEligible = false
 	}
 	pathState.refCount++
 	s.pathStates[localPath] = pathState
