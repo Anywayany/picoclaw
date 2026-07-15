@@ -38,6 +38,7 @@ var gateway = struct {
 	bootConfigSignature string
 	runtimeStatus       string
 	startupDeadline     time.Time
+	processLifetimeDone func()
 	logs                *LogBuffer
 	pidData             *ppid.PidFileData // pid file data read from picoclaw.pid.json
 	picoToken           string            // cached raw pico token for upstream gateway proxy injection
@@ -110,6 +111,17 @@ var (
 var gatewayHealthGet = func(url string, timeout time.Duration) (*http.Response, error) {
 	client := http.Client{Timeout: timeout}
 	return client.Get(url)
+}
+
+var gatewayPreflightHealthGet = getGatewayHealthByURL
+
+var gatewayPortInUse = func(address string, timeout time.Duration) bool {
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 var gatewayReloadDo = func(req *http.Request) (*http.Response, error) {
@@ -248,6 +260,76 @@ func getGatewayHealthByURL(url string, timeout time.Duration) (*health.StatusRes
 	}
 
 	return &healthResponse, resp.StatusCode, nil
+}
+
+func (h *Handler) configuredGatewayAddress(cfg *config.Config) (host string, port int, address string) {
+	port = 18790
+	if cfg != nil && cfg.Gateway.Port != 0 {
+		port = cfg.Gateway.Port
+	}
+	host = gatewayProbeHost(h.effectiveGatewayBindHost(cfg))
+	address = net.JoinHostPort(host, strconv.Itoa(port))
+	return host, port, address
+}
+
+// attachGatewayFromConfiguredPortLocked detects a gateway that is reachable on
+// the configured port even when its PID file is missing. It only attaches when
+// the process identity can be verified; otherwise it returns an actionable port
+// conflict instead of starting another process that will fail to bind.
+// Caller must hold gateway.mu.
+func (h *Handler) attachGatewayFromConfiguredPortLocked(cfg *config.Config) (int, bool, error) {
+	host, port, address := h.configuredGatewayAddress(cfg)
+	healthURL := "http://" + address + "/health"
+	healthResp, statusCode, healthErr := gatewayPreflightHealthGet(healthURL, 800*time.Millisecond)
+	if healthErr == nil && statusCode == http.StatusOK && healthResp != nil {
+		if healthResp.PID <= 0 {
+			return 0, false, fmt.Errorf(
+				"gateway port %s is occupied by a service with no verifiable process ID",
+				address,
+			)
+		}
+
+		isGateway, inspected := gatewayProcessMatcher(healthResp.PID)
+		if !inspected {
+			return 0, false, fmt.Errorf(
+				"gateway port %s is occupied by PID %d, but the process identity could not be verified",
+				address,
+				healthResp.PID,
+			)
+		}
+		if !isGateway {
+			return 0, false, fmt.Errorf(
+				"gateway port %s is occupied by a non-PicoClaw process (PID %d)",
+				address,
+				healthResp.PID,
+			)
+		}
+
+		if err := attachToGatewayProcessLocked(healthResp.PID, cfg); err != nil {
+			return 0, false, fmt.Errorf("attach to gateway discovered at %s: %w", address, err)
+		}
+		gateway.pidData = &ppid.PidFileData{
+			PID:  healthResp.PID,
+			Host: host,
+			Port: port,
+		}
+		refreshPicoTokensLocked(h.configPath)
+		logger.InfoC(
+			"gateway",
+			fmt.Sprintf("Attached to gateway discovered at %s (PID: %d)", address, healthResp.PID),
+		)
+		return healthResp.PID, true, nil
+	}
+
+	if gatewayPortInUse(address, 500*time.Millisecond) {
+		detail := "health endpoint unavailable"
+		if healthErr == nil {
+			detail = fmt.Sprintf("health endpoint returned status %d", statusCode)
+		}
+		return 0, false, fmt.Errorf("gateway port %s is already occupied (%s)", address, detail)
+	}
+
+	return 0, false, nil
 }
 
 // isLikelyGatewayProcess returns whether PID appears to be a picoclaw gateway
@@ -458,7 +540,11 @@ func (h *Handler) TryAutoStartGateway() {
 		logger.ErrorC("gateway", fmt.Sprintf("Failed to auto-start gateway: %v", err))
 		return
 	}
-	logger.InfoC("gateway", fmt.Sprintf("Gateway auto-started (PID: %d)", pid))
+	if gateway.owned {
+		logger.InfoC("gateway", fmt.Sprintf("Gateway auto-started (PID: %d)", pid))
+	} else {
+		logger.InfoC("gateway", fmt.Sprintf("Attached to existing gateway (PID: %d)", pid))
+	}
 }
 
 // gatewayStartReady validates whether current config can start the gateway.
@@ -953,6 +1039,7 @@ func attachToGatewayProcessLocked(pid int, cfg *config.Config) error {
 
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.owned = false // We didn't start this process
+	gateway.processLifetimeDone = nil
 	setGatewayRuntimeStatusLocked("running")
 
 	// Update bootDefaultModel and bootConfigSignature from config
@@ -1030,7 +1117,8 @@ func (h *Handler) StopGateway() {
 	logger.InfoC("gateway", fmt.Sprintf("Gateway stopped (PID: %d)", pid))
 }
 
-// stopGatewayLocked sends a stop signal to the gateway process.
+// stopGatewayLocked gracefully stops the gateway, waits for it to exit, and
+// force-kills it if the grace period expires.
 // Assumes gateway.mu is held by the caller.
 // Returns the PID of the stopped process and any error encountered.
 func stopGatewayLocked() (int, error) {
@@ -1039,35 +1127,42 @@ func stopGatewayLocked() (int, error) {
 	}
 
 	pid := gateway.cmd.Process.Pid
+	cmd := gateway.cmd
 	if !gateway.owned {
 		if isGateway, inspected := gatewayProcessMatcher(pid); inspected && !isGateway {
 			return pid, fmt.Errorf("refuse to stop non-gateway process (PID %d)", pid)
 		}
 	}
 
-	// Send SIGTERM for graceful shutdown (SIGKILL on Windows)
-	var sigErr error
-	if runtime.GOOS == "windows" {
-		sigErr = gateway.cmd.Process.Kill()
-	} else {
-		sigErr = gateway.cmd.Process.Signal(syscall.SIGTERM)
+	setGatewayRuntimeStatusLocked("stopping")
+	if err := stopGatewayProcess(cmd); err != nil {
+		if isCmdProcessAliveLocked(cmd) {
+			setGatewayRuntimeStatusLocked("running")
+		} else {
+			setGatewayRuntimeStatusLocked("error")
+		}
+		return pid, err
 	}
 
-	if sigErr != nil {
-		return pid, sigErr
+	logger.InfoC("gateway", fmt.Sprintf("Gateway process exited (PID: %d)", pid))
+	if gateway.processLifetimeDone != nil {
+		gateway.processLifetimeDone()
+		gateway.processLifetimeDone = nil
 	}
-
-	logger.InfoC("gateway", fmt.Sprintf("Sent stop signal to gateway (PID: %d)", pid))
-	gateway.cmd = nil
+	if gateway.cmd == cmd {
+		gateway.cmd = nil
+	}
 	gateway.owned = false
 	gateway.bootDefaultModel = ""
+	gateway.bootConfigSignature = ""
 	gateway.pidData = nil
 	setGatewayRuntimeStatusLocked("stopped")
+	ppid.RemovePidFileIfPID(globalConfigDir(), pid)
 
 	return pid, nil
 }
 
-func stopGatewayProcessForRestart(cmd *exec.Cmd) error {
+func stopGatewayProcess(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil || !isCmdProcessAliveLocked(cmd) {
 		return nil
 	}
@@ -1096,7 +1191,7 @@ func stopGatewayProcessForRestart(cmd *exec.Cmd) error {
 		}
 	}
 
-	return fmt.Errorf("existing gateway did not exit before restart")
+	return fmt.Errorf("gateway did not exit before the stop timeout")
 }
 
 func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int, error) {
@@ -1119,6 +1214,12 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 		}
 
 		return pid, nil
+	}
+
+	if discoveredPID, attached, discoverErr := h.attachGatewayFromConfiguredPortLocked(cfg); discoverErr != nil {
+		return 0, discoverErr
+	} else if attached {
+		return discoveredPID, nil
 	}
 
 	// Start new process
@@ -1173,9 +1274,17 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start gateway: %w", err)
 	}
+	processLifetimeDone, lifetimeErr := attachLauncherProcessLifetime(cmd)
+	if lifetimeErr != nil {
+		logger.WarnC(
+			"gateway",
+			fmt.Sprintf("Failed to bind gateway lifetime to launcher: %v", lifetimeErr),
+		)
+	}
 
 	gateway.cmd = cmd
 	gateway.owned = true // We started this process
+	gateway.processLifetimeDone = processLifetimeDone
 	gateway.bootDefaultModel = defaultModelName
 	gateway.bootConfigSignature = computeConfigSignature(cfg)
 	setGatewayRuntimeStatusLocked(initialStatus)
@@ -1195,8 +1304,13 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 		}
 
 		gateway.mu.Lock()
+		if processLifetimeDone != nil {
+			processLifetimeDone()
+		}
 		if gateway.cmd == cmd {
 			gateway.cmd = nil
+			gateway.owned = false
+			gateway.processLifetimeDone = nil
 			gateway.bootDefaultModel = ""
 			gateway.bootConfigSignature = ""
 			if gateway.runtimeStatus != "restarting" {
@@ -1411,7 +1525,7 @@ func (h *Handler) RestartGateway() (int, error) {
 		}
 	}
 
-	if err = stopGatewayProcessForRestart(previousCmd); err != nil {
+	if err = stopGatewayProcess(previousCmd); err != nil {
 		gateway.mu.Lock()
 		if gateway.cmd == previousCmd {
 			if isCmdProcessAliveLocked(previousCmd) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/health"
 	ppid "github.com/sipeed/picoclaw/pkg/pid"
 	"github.com/sipeed/picoclaw/web/backend/utils"
 )
@@ -96,14 +97,24 @@ func resetGatewayTestState(t *testing.T) {
 	t.Helper()
 
 	originalHealthGet := gatewayHealthGet
+	originalPreflightHealthGet := gatewayPreflightHealthGet
+	originalPortInUse := gatewayPortInUse
 	originalProcessMatcher := gatewayProcessMatcher
 	originalExecCommand := gatewayExecCommand
 	originalRestartGracePeriod := gatewayRestartGracePeriod
 	originalRestartForceKillWindow := gatewayRestartForceKillWindow
 	originalRestartPollInterval := gatewayRestartPollInterval
 	t.Setenv("PICOCLAW_HOME", t.TempDir())
+	// Keep unit tests independent from services listening on the developer's
+	// configured gateway port. Tests for preflight behavior override these.
+	gatewayPreflightHealthGet = func(string, time.Duration) (*health.StatusResponse, int, error) {
+		return nil, 0, errors.New("no gateway in test")
+	}
+	gatewayPortInUse = func(string, time.Duration) bool { return false }
 	t.Cleanup(func() {
 		gatewayHealthGet = originalHealthGet
+		gatewayPreflightHealthGet = originalPreflightHealthGet
+		gatewayPortInUse = originalPortInUse
 		gatewayProcessMatcher = originalProcessMatcher
 		gatewayExecCommand = originalExecCommand
 		gatewayRestartGracePeriod = originalRestartGracePeriod
@@ -114,6 +125,7 @@ func resetGatewayTestState(t *testing.T) {
 		gateway.cmd = nil
 		gateway.pidData = nil
 		gateway.owned = false
+		gateway.processLifetimeDone = nil
 		gateway.bootDefaultModel = ""
 		gateway.bootConfigSignature = ""
 		setGatewayRuntimeStatusLocked("stopped")
@@ -338,6 +350,69 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 	}
 	if bootSignature != expectedSignature {
 		t.Fatalf("bootConfigSignature = %q, want %q", bootSignature, expectedSignature)
+	}
+}
+
+func TestStartGatewayLockedAttachesVerifiedGatewayWithoutPidFile(t *testing.T) {
+	h := newGatewayStartTestHandler(t)
+
+	gatewayPreflightHealthGet = func(string, time.Duration) (*health.StatusResponse, int, error) {
+		return &health.StatusResponse{Status: "ok", PID: os.Getpid()}, http.StatusOK, nil
+	}
+	gatewayProcessMatcher = func(pid int) (bool, bool) {
+		return pid == os.Getpid(), true
+	}
+	gatewayPortInUse = func(string, time.Duration) bool {
+		t.Fatal("raw port probe should not run after a valid gateway health response")
+		return false
+	}
+
+	gateway.mu.Lock()
+	pid, err := h.startGatewayLocked("starting", 0)
+	gateway.mu.Unlock()
+	if err != nil {
+		t.Fatalf("startGatewayLocked() error = %v", err)
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("startGatewayLocked() pid = %d, want %d", pid, os.Getpid())
+	}
+
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if gateway.owned {
+		t.Fatal("gateway discovered without a PID file must be attached, not owned")
+	}
+	if gateway.pidData == nil || gateway.pidData.PID != os.Getpid() {
+		t.Fatalf("gateway.pidData = %#v, want PID %d", gateway.pidData, os.Getpid())
+	}
+}
+
+func TestStartGatewayLockedReportsOccupiedPortBeforeSpawning(t *testing.T) {
+	h := newGatewayStartTestHandler(t)
+
+	gatewayPreflightHealthGet = func(string, time.Duration) (*health.StatusResponse, int, error) {
+		return nil, 0, errors.New("not a gateway health endpoint")
+	}
+	gatewayPortInUse = func(address string, _ time.Duration) bool {
+		return strings.HasSuffix(address, ":18790")
+	}
+	spawned := false
+	gatewayExecCommand = func(string, ...string) *exec.Cmd {
+		spawned = true
+		return exec.Command(os.Args[0])
+	}
+
+	gateway.mu.Lock()
+	_, err := h.startGatewayLocked("starting", 0)
+	gateway.mu.Unlock()
+	if err == nil {
+		t.Fatal("startGatewayLocked() error = nil, want occupied-port error")
+	}
+	if !strings.Contains(err.Error(), "gateway port") || !strings.Contains(err.Error(), "occupied") {
+		t.Fatalf("startGatewayLocked() error = %q, want actionable occupied-port message", err)
+	}
+	if spawned {
+		t.Fatal("gateway process was spawned despite a detected port conflict")
 	}
 }
 
@@ -999,6 +1074,76 @@ func TestGatewayStopRefusesNonGatewayAttachedProcess(t *testing.T) {
 	}
 	if !isCmdProcessAliveLocked(cmd) {
 		t.Fatal("non-gateway process should not be terminated by /api/gateway/stop")
+	}
+}
+
+func TestStopGatewayWaitsForOwnedProcessExit(t *testing.T) {
+	resetGatewayTestState(t)
+
+	cmd := startLongRunningProcess(t)
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	gatewayRestartGracePeriod = 2 * time.Second
+	gatewayRestartForceKillWindow = 500 * time.Millisecond
+	gatewayRestartPollInterval = 10 * time.Millisecond
+
+	gateway.mu.Lock()
+	gateway.cmd = cmd
+	gateway.owned = true
+	setGatewayRuntimeStatusLocked("running")
+	gateway.mu.Unlock()
+
+	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
+	h.StopGateway()
+
+	select {
+	case <-waitDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StopGateway() returned before the owned process exited")
+	}
+
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if gateway.cmd != nil || gateway.owned || gateway.runtimeStatus != "stopped" {
+		t.Fatalf(
+			"gateway state after stop = {cmd:%v owned:%v status:%q}, want stopped and unowned",
+			gateway.cmd,
+			gateway.owned,
+			gateway.runtimeStatus,
+		)
+	}
+}
+
+func TestStopGatewayDoesNotStopAttachedProcess(t *testing.T) {
+	resetGatewayTestState(t)
+
+	cmd := startLongRunningProcess(t)
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+
+	gateway.mu.Lock()
+	gateway.cmd = cmd
+	gateway.owned = false
+	setGatewayRuntimeStatusLocked("running")
+	gateway.mu.Unlock()
+
+	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
+	h.StopGateway()
+
+	if !isCmdProcessAliveLocked(cmd) {
+		t.Fatal("StopGateway() terminated a process that the launcher did not own")
 	}
 }
 

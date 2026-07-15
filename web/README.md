@@ -120,6 +120,15 @@ When a gateway process is started by the launcher, the launcher:
 - tracks transient states such as `starting`, `restarting`, and `stopping`
 - marks restart-required when the default model or enabled tool set changed since boot
 - ensures the Pico channel is configured before startup
+- stops only that launcher-owned process when the launcher exits, waiting for a
+  graceful shutdown before force-killing it after the timeout
+- binds the child lifetime to the launcher on Linux and Windows so an abnormal
+  launcher exit does not normally leave the managed gateway behind
+
+Before spawning a gateway, the launcher also probes the configured port. A
+verified PicoClaw gateway is attached even if its PID file is missing; any other
+listener produces an explicit port-conflict error instead of a second process
+failing later with a generic bind error.
 
 ### Launcher Authentication
 
